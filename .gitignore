@@ -1,0 +1,11 @@
+# Runtime data — created by skill at execution time, never commit
+templates/.gpt_consult/
+templates/__pycache__/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+
+# Test / scratch artifacts (if user copies them in)
+*.bak
+*.tmp
