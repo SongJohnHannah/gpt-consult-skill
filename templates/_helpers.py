@@ -558,3 +558,36 @@ def mark_last_user_message(page, text: str) -> bool:
         }""", marker)
     except Exception:
         return False
+
+
+def get_max_input_chars(c: dict) -> int:
+    """Resolve the text-size limit for a backend.
+
+    Priority:
+      1. env var GPT_CONSULT_MAX_INPUT_CHARS (positive int) — caller override.
+      2. backend's own max_input_chars from backend_config.
+      3. fallback 400_000 (matches chatgpt conservative default).
+
+    Validation: env var MUST be a positive int. Invalid values (non-numeric,
+    zero, negative) exit rc=2 with a clear error — failure must propagate,
+    no silent fallback to the default (per "失败就抛错，不兜底").
+
+    Round 10 helper extracted from send_message.py / send_with_images.py to
+    prevent drift between the two callers.
+    """
+    raw = os.environ.get('GPT_CONSULT_MAX_INPUT_CHARS')
+    if raw is not None:
+        try:
+            v = int(raw)
+        except ValueError:
+            sys.stderr.write(
+                f'[get_max_input_chars] invalid GPT_CONSULT_MAX_INPUT_CHARS='
+                f'{raw!r}: must be a positive integer. Refusing to send.\n')
+            sys.exit(2)
+        if v <= 0:
+            sys.stderr.write(
+                f'[get_max_input_chars] invalid GPT_CONSULT_MAX_INPUT_CHARS='
+                f'{v}: must be positive. Refusing to send.\n')
+            sys.exit(2)
+        return v
+    return c.get('max_input_chars', 400_000)

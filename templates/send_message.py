@@ -24,6 +24,7 @@ from _helpers import (
     verify_message_sent,
     find_existing_send, mark_last_user_message,
     detect_pending_attachments, clear_pending_attachments, submit_message,
+    get_max_input_chars,
     ReplyStatus,
     GPT_CONSULT_REPLY_TIMEOUT_S,
 )
@@ -249,14 +250,12 @@ def main():
     text = sys.stdin.read() if text_arg == '-' else text_arg
     c = cfg(backend)
 
-    # Round 9 minor improvement: pre-submit text-size guard.
+    # Round 10: pre-submit text-size guard.
     # Refuses to send (rc=11) if the message exceeds the backend's
     # max_input_chars. Prevents paste-stall, UI truncation, and DOM
     # corruption on oversized payloads. Override via
-    # GPT_CONSULT_MAX_INPUT_CHARS if you really need to push past.
-    max_input_chars = int(os.environ.get(
-        'GPT_CONSULT_MAX_INPUT_CHARS',
-        str(c.get('max_input_chars', 400_000))))
+    # GPT_CONSULT_MAX_INPUT_CHARS (validated by get_max_input_chars).
+    max_input_chars = get_max_input_chars(c)
     if len(text) > max_input_chars:
         print(f"[send_message] REFUSED: text too long for {c['display']} "
               f"({len(text)} chars > max_input_chars={max_input_chars}). "

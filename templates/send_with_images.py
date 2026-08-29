@@ -18,6 +18,7 @@ from _helpers import (
     find_real_composer, find_real_reply_text, is_real_streaming,
     verify_message_sent,
     find_existing_send, mark_last_user_message,
+    get_max_input_chars,
     ReplyStatus,
     GPT_CONSULT_REPLY_TIMEOUT_S,
 )
@@ -162,13 +163,11 @@ def main():
 
     c = cfg(backend)
 
-    # Round 9 minor improvement: pre-submit text-size guard.
+    # Round 10: pre-submit text-size guard.
     # Refuses to send (rc=11) if the message exceeds the backend's
     # max_input_chars. Same semantics as send_message.py — image+text
-    # still counts as text for the limit.
-    max_input_chars = int(os.environ.get(
-        'GPT_CONSULT_MAX_INPUT_CHARS',
-        str(c.get('max_input_chars', 400_000))))
+    # still counts as text for the limit. Validated by get_max_input_chars.
+    max_input_chars = get_max_input_chars(c)
     if len(text) > max_input_chars:
         print(f"[send_with_images] REFUSED: text too long for {c['display']} "
               f"({len(text)} chars > max_input_chars={max_input_chars}). "
