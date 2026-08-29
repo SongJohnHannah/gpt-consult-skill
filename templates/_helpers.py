@@ -246,7 +246,14 @@ def find_real_reply_text(page, c: dict, baseline_user: int,
     if not skip_baseline:
         try:
             user_present = 0
-            for sel in ['[data-message-author-role="user"]', '[data-role="user"]']:
+            # Round 13b: deepseek uses class-based selectors, not data-attribute.
+            # .ds-collapsible-text is the user-content bubble inside div.ds-message.
+            # Must match send_message.py / send_with_images.py _USER_SELECTORS.
+            for sel in [
+                'div.ds-message .ds-collapsible-text',
+                '[data-message-author-role="user"]',
+                '[data-role="user"]',
+            ]:
                 try:
                     user_present = max(user_present, page.locator(sel).count())
                 except Exception:

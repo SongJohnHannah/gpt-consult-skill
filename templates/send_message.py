@@ -85,7 +85,17 @@ def fill_input(page, loc, text, backend):
         sys.exit(7)
 
 
-_USER_SELECTORS = ['[data-message-author-role="user"]', '[data-role="user"]']
+_USER_SELECTORS = [
+    # Round 13b: deepseek uses class-based selectors, not data-attribute.
+    # .ds-collapsible-text wraps the user-content bubble; div.ds-message is
+    # the parent container shared with assistant messages (filtered by the
+    # child .ds-collapsible-text to distinguish user from assistant).
+    'div.ds-message .ds-collapsible-text',
+    # chatgpt uses ProseMirror + data-attribute (unchanged).
+    '[data-message-author-role="user"]',
+    # generic data-role fallback.
+    '[data-role="user"]',
+]
 
 
 def _count_user(page) -> int:

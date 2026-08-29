@@ -29,7 +29,13 @@ _LOC_TIMEOUT_MS = 3000
 _WATCHDOG_S = 360  # image round is slower than text round
 
 
-_USER_SELECTORS = ['[data-message-author-role="user"]', '[data-role="user"]']
+_USER_SELECTORS = [
+    # Round 13b: deepseek uses class-based selectors, not data-attribute.
+    # See send_message.py for rationale.
+    'div.ds-message .ds-collapsible-text',
+    '[data-message-author-role="user"]',
+    '[data-role="user"]',
+]
 
 
 def _count_user(page) -> int:

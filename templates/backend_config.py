@@ -88,6 +88,11 @@ BACKENDS: dict[str, dict] = {
             'textarea',
         ],
         'reply_selectors': [
+            # Round 13b: deepseek uses class-based, not data-attribute.
+            # div.ds-message wraps BOTH user and assistant. .ds-collapsible-text
+            # is the user-content bubble — :not(:has(...)) excludes user msgs.
+            'div.ds-message:not(:has(.ds-collapsible-text))',
+            # Generic data-role fallbacks (kept for hypothetical other backends).
             '[data-role="assistant"]',
             '.message-assistant',
             'div[class*="assistant"]:not([class*="user"])',
