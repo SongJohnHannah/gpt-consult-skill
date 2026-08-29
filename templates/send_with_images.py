@@ -83,9 +83,15 @@ def wait_for_reply_with_images(page, c, baseline_user,
         elapsed = now - start
 
         if elapsed > max_stream_s:
+            print(f"[send_with_images] {c['display']} TIMEOUT "
+                  f"reason=ABSOLUTE_CAP "
+                  f"(elapsed={elapsed:.1f}s > max_stream_s={max_stream_s})",
+                  file=sys.stderr)
             return ReplyStatus.TIMEOUT
 
-        streaming = is_real_streaming(page, c)
+        # Round 9: pass last_text so is_real_streaming also detects
+        # text-change as a streaming signal.
+        streaming = is_real_streaming(page, c, prev_reply_text=last_text)
         user_count = _count_user(page)
         assistant_count = _count_assistant(page, c)
 
@@ -120,9 +126,19 @@ def wait_for_reply_with_images(page, c, baseline_user,
 
         if user_seen and assistant_seen:
             if now - last_activity_at > stream_idle_s:
+                print(f"[send_with_images] {c['display']} TIMEOUT "
+                      f"reason=STREAM_IDLE "
+                      f"(no activity for {now - last_activity_at:.1f}s, "
+                      f"threshold={stream_idle_s}s)",
+                      file=sys.stderr)
                 return ReplyStatus.TIMEOUT
 
         if now > hard_deadline and not streaming:
+            print(f"[send_with_images] {c['display']} TIMEOUT "
+                  f"reason=DEADLINE "
+                  f"(elapsed={elapsed:.1f}s > hard_deadline="
+                  f"{hard_deadline - start:.1f}s, not streaming)",
+                  file=sys.stderr)
             return ReplyStatus.TIMEOUT
 
         time.sleep(POLL)
@@ -145,6 +161,20 @@ def main():
             sys.exit(2)
 
     c = cfg(backend)
+
+    # Round 9 minor improvement: pre-submit text-size guard.
+    # Refuses to send (rc=11) if the message exceeds the backend's
+    # max_input_chars. Same semantics as send_message.py — image+text
+    # still counts as text for the limit.
+    max_input_chars = int(os.environ.get(
+        'GPT_CONSULT_MAX_INPUT_CHARS',
+        str(c.get('max_input_chars', 400_000))))
+    if len(text) > max_input_chars:
+        print(f"[send_with_images] REFUSED: text too long for {c['display']} "
+              f"({len(text)} chars > max_input_chars={max_input_chars}). "
+              f"Split the request or override via GPT_CONSULT_MAX_INPUT_CHARS.",
+              file=sys.stderr)
+        sys.exit(11)
 
     with watchdog(_WATCHDOG_S, 'send_with_images'):
         with sync_playwright() as p:

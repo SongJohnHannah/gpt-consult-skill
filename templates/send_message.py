@@ -163,9 +163,15 @@ def wait_for_reply(page, c, baseline_user, timeout_s: float | None = None) -> Re
         # Absolute cap — never wait longer than this even if deadline
         # keeps getting pushed.
         if elapsed > max_stream_s:
+            print(f"[send_message] {c['display']} TIMEOUT reason=ABSOLUTE_CAP "
+                  f"(elapsed={elapsed:.1f}s > max_stream_s={max_stream_s})",
+                  file=sys.stderr)
             return ReplyStatus.TIMEOUT
 
-        streaming = is_real_streaming(page, c)
+        # Round 9: pass last_text so is_real_streaming can also detect
+        # text-change as a streaming signal (defends against UI changes
+        # that hide the stop button during long reasoning pauses).
+        streaming = is_real_streaming(page, c, prev_reply_text=last_text)
         user_count = _count_user(page)
         assistant_count = _count_assistant(page, c)
 
@@ -207,10 +213,20 @@ def wait_for_reply(page, c, baseline_user, timeout_s: float | None = None) -> Re
         # the stream is frozen.
         if user_seen and assistant_seen:
             if now - last_activity_at > stream_idle_s:
+                print(f"[send_message] {c['display']} TIMEOUT "
+                      f"reason=STREAM_IDLE "
+                      f"(no activity for {now - last_activity_at:.1f}s, "
+                      f"threshold={stream_idle_s}s)",
+                      file=sys.stderr)
                 return ReplyStatus.TIMEOUT
 
         # Hard deadline + not streaming: final timeout.
         if now > hard_deadline and not streaming:
+            print(f"[send_message] {c['display']} TIMEOUT "
+                  f"reason=DEADLINE "
+                  f"(elapsed={elapsed:.1f}s > hard_deadline="
+                  f"{hard_deadline - start:.1f}s, not streaming)",
+                  file=sys.stderr)
             return ReplyStatus.TIMEOUT
 
         time.sleep(POLL)
@@ -232,6 +248,22 @@ def main():
 
     text = sys.stdin.read() if text_arg == '-' else text_arg
     c = cfg(backend)
+
+    # Round 9 minor improvement: pre-submit text-size guard.
+    # Refuses to send (rc=11) if the message exceeds the backend's
+    # max_input_chars. Prevents paste-stall, UI truncation, and DOM
+    # corruption on oversized payloads. Override via
+    # GPT_CONSULT_MAX_INPUT_CHARS if you really need to push past.
+    max_input_chars = int(os.environ.get(
+        'GPT_CONSULT_MAX_INPUT_CHARS',
+        str(c.get('max_input_chars', 400_000))))
+    if len(text) > max_input_chars:
+        print(f"[send_message] REFUSED: text too long for {c['display']} "
+              f"({len(text)} chars > max_input_chars={max_input_chars}). "
+              f"Split the request, switch to a backend with a higher limit, "
+              f"or override via GPT_CONSULT_MAX_INPUT_CHARS.",
+              file=sys.stderr)
+        sys.exit(11)
 
     # Round 8 P4: journal this round so retries / cross-process recovery
     # know whether the message was sent, whether the round is ambiguous,

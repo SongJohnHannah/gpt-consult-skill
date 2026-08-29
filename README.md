@@ -140,6 +140,7 @@ This skill was shipped with **GPT-verified source-level review**.
 | Round 8 P2 | `ReplyStatus` state machine (DONE/TIMEOUT/STREAMING/BROWSER_DEAD) | ✅ fixed + GPT VERIFIED |
 | Round 8 P3 | auto-attach cleanup before submit | ✅ fixed + GPT VERIFIED |
 | Round 8 P4 | SQLite journal with UNKNOWN sticky | ✅ fixed + GPT VERIFIED |
+| Round 9 | wait-design SOUND + 3 minor improvements (combined streaming signals, baseline isolation, TIMEOUT sub-reason log) | ✅ fixed + GPT SOUND |
 
 GPT flagged 5 minor suggestions (UUID-based round_id, atomic claim via
 conditional UPDATE, journal ordering, timeout centralization, etc.) —
@@ -158,6 +159,15 @@ Failover and tab reset handle those.
 
 ## Limitations
 
+- **Per-backend text-size cap** (refuses with `rc=11` if exceeded):
+  | backend | max chars | ~tokens | override |
+  |---|---|---|---|
+  | `chatgpt` | 400,000 | 128K | `GPT_CONSULT_MAX_INPUT_CHARS` |
+  | `deepseek` | 100,000 | 32K | `GPT_CONSULT_MAX_INPUT_CHARS` |
+  | `gemini` | 500,000 | 125K | `GPT_CONSULT_MAX_INPUT_CHARS` |
+  These are conservative web-UI safe limits, not raw API limits. Web UIs
+  truncate, paste-stall, or DOM-corrupt above these. Switch backends or
+  split the request if you're hitting the cap.
 - Single-process orchestrator. Concurrent `round.py` invocations on the
   same journal would need atomic claim (GPT minor suggestion #2).
 - ChatGPT requires a ProseMirror-aware composer selector (`#prompt-textarea`).

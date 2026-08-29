@@ -8,6 +8,10 @@ Each entry tells the loop:
 - how to detect login state (login_selectors = visible = NOT logged in)
 - how to start a fresh conversation (new_chat_selectors)
 - display name for user-facing logs
+- max_input_chars: pre-submit guard. Refuses to send (rc=11) when the
+  message exceeds this limit. Conservative defaults derived from web-UI
+  safe limits, not raw API limits (web UIs truncate, paste stalls, etc.).
+  Override per-call with env var GPT_CONSULT_MAX_INPUT_CHARS.
 
 Add a new backend by appending an entry. Loop uses CONSULT_BACKENDS env var
 to pick the priority order, default = chatgpt → deepseek → gemini.
@@ -70,6 +74,9 @@ BACKENDS: dict[str, dict] = {
             '[data-testid="new-chat-button"]',
             'nav a:first-child',
         ],
+        # ChatGPT web UI: practical safe limit ~128K tokens ≈ 400K chars.
+        # Beyond this the composer starts lagging and submit stalls.
+        'max_input_chars': 400_000,
     },
     'deepseek': {
         'display': 'DeepSeek',
@@ -99,6 +106,9 @@ BACKENDS: dict[str, dict] = {
             'a:has-text("新对话")',
             '[aria-label*="new"]',
         ],
+        # DeepSeek web UI: practical safe limit ~32K tokens ≈ 100K chars.
+        # Web UI is tighter than the API (which advertises 64K-128K).
+        'max_input_chars': 100_000,
     },
     'gemini': {
         'display': 'Gemini',
@@ -131,6 +141,10 @@ BACKENDS: dict[str, dict] = {
             'a[href="/app"]',
             'button[aria-label*="New chat"]',
         ],
+        # Gemini web UI: practical safe limit ~125K tokens ≈ 500K chars.
+        # Gemini 2.5 Pro advertises 1M tokens but the web UI clamps input
+        # well before that.
+        'max_input_chars': 500_000,
     },
 }
 
