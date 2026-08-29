@@ -284,72 +284,84 @@ def _is_thinking_placeholder(text: str) -> bool:
     return _THINKING_PLACEHOLDER_RE.match(text) is not None
 
 
-# Round 14: deepseek-specific mode selector (R1 expert mode / 深度思考).
-# Other backends don't expose a mode toggle — chatgpt/gemini have fixed models.
-_DEEPSEEK_EXPERT_TOGGLE_SELECTOR = 'div.ds-toggle-button:has-text("深度思考")'
-_DEEPSEEK_EXPERT_SELECTED_CLASS = 'ds-toggle-button--selected'
+# Round 14: deepseek model-selection selector.
+# Deepseek shows 3 model cards on the welcome screen of a fresh tab:
+#   快速模式 (fast, DEFAULT), 专家模式 (R1 expert), 识图模式 (image)
+# The selected card has an extra `_31a22b0` class. Clicking a card
+# selects it; the conversation will start in that mode when the user
+# sends the first message. Once a conversation starts, model selection
+# is LOCKED — no in-conversation model switch exists.
+#
+# Critical: `_DEEPSEEK_EXPERT_TOGGLE_SELECTOR` (the "深度思考" toggle) is a
+# SEPARATE control (show thinking chain in UI), NOT a model switcher.
+# Clicking it mid-conversation is a no-op for the actual model.
+_DEEPSEEK_EXPERT_CARD = 'div._9f2341b._18572c1'
+_DEEPSEEK_EXPERT_SELECTED_CLASS = '_31a22b0'
+_DEEPSEEK_EXPERT_CARD_TEXT = '专家模式'
 
 
 def ensure_expert_mode(page, c: dict, timeout_s: float = 6.0) -> bool:
-    """Click the deepseek 深度思考 (R1 expert) toggle if not already selected.
+    """On a fresh deepseek welcome screen, select 专家模式 (R1 expert).
 
     Backend-specific: only deepseek exposes this control. For other backends
     (chatgpt, gemini) this is a no-op that returns True.
 
-    Why this lives here:
-      - When `set_backend.py` or `reset_to_new_chat.py` opens a fresh deepseek
-        tab, the page loads with the default mode (快速 / fast). Without
-        clicking 深度思考, every round on that tab answers in fast mode —
-        the user explicitly asked for expert mode but the skill never
-        selects it.
-      - User-controlled: if they have manually selected fast mode and we
-        force expert, we override their choice. Acceptable for the consult
-        loop's stated contract ("use deepseek expert mode"), but the helper
-        only fires at tab-creation paths (set_backend / reset_to_new_chat),
-        not on every send_message round.
+    Mechanism (verified live 2026-08-29):
+      - Deepseek fresh tab shows 3 model cards (快速模式 / 专家模式 / 识图模式).
+      - Clicking a card moves the `_31a22b0` class to it (radio-button UX).
+      - Conversation starts in the SELECTED mode when user sends first message.
+      - Once a conversation starts, model selection is LOCKED — no
+        in-conversation switch exists. Per user: "切换成功后 无法在切换
+        其它模型，只能重新开启标签切换模型".
 
-    Returns True if expert mode is selected after this call (was already
-    selected, OR we successfully clicked the toggle). False only when the
-    toggle never appeared within timeout_s — caller should log + continue
-    rather than block the round on this.
+    Caller contract:
+      - Invoke BEFORE first message in a fresh conversation.
+      - Idempotent: if 专家模式 is already selected, returns True without click.
+      - If the welcome screen is gone (cards.count() == 0), the tab is mid-
+        conversation — return True (no-op, can't change model anyway).
+      - Failure non-fatal: returns False on timeout; caller logs + continues.
+
+    Returns True if expert mode is selected (was already, OR clicked, OR tab
+    is mid-conversation and we couldn't help). False only on timeout.
     """
     if c.get('display') != 'DeepSeek':
         return True
 
+    # Only fire on the welcome screen. If cards aren't visible, the tab is
+    # already in a conversation and we can't change the model.
+    try:
+        cards = page.locator(_DEEPSEEK_EXPERT_CARD)
+        if cards.count() == 0:
+            return True
+    except Exception:
+        return True
+
     deadline = time.time() + timeout_s
-    toggle = None
     while time.time() < deadline:
         try:
-            loc = page.locator(_DEEPSEEK_EXPERT_TOGGLE_SELECTOR).first
-            if loc.count() > 0 and loc.is_visible(timeout=1500):
-                toggle = loc
-                break
+            expert_card = page.locator(
+                _DEEPSEEK_EXPERT_CARD, has_text=_DEEPSEEK_EXPERT_CARD_TEXT).first
+            if expert_card.count() > 0 and expert_card.is_visible(timeout=1500):
+                # Idempotent: if already selected, no click needed.
+                try:
+                    already = expert_card.evaluate(
+                        f'el => el.className.includes("{_DEEPSEEK_EXPERT_SELECTED_CLASS}")')
+                except Exception:
+                    already = False
+                if already:
+                    return True
+                expert_card.click(timeout=3000)
+                time.sleep(0.4)
+                # Verify the click moved the selected class.
+                try:
+                    return expert_card.evaluate(
+                        f'el => el.className.includes("{_DEEPSEEK_EXPERT_SELECTED_CLASS}")')
+                except Exception:
+                    return False
         except Exception:
             pass
         time.sleep(0.4)
-    if toggle is None:
-        return False
-
-    # Idempotent: skip the click if expert mode is already selected.
-    try:
-        already = toggle.evaluate(
-            f'el => el.className.includes("{_DEEPSEEK_EXPERT_SELECTED_CLASS}")')
-    except Exception:
-        already = False
-    if already:
-        return True
-
-    try:
-        toggle.click(timeout=3000)
-    except Exception:
-        return False
-    # Re-check post-click; some UIs need a render frame to apply --selected.
-    time.sleep(0.4)
-    try:
-        return toggle.evaluate(
-            f'el => el.className.includes("{_DEEPSEEK_EXPERT_SELECTED_CLASS}")')
-    except Exception:
-        return False
+    return False
 
 
 def find_real_reply_text(page, c: dict, baseline_user: int,
