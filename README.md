@@ -160,12 +160,13 @@ Failover and tab reset handle those.
 ## Limitations
 
 - **Per-backend text-size cap** (refuses with `rc=11` if exceeded):
-  | backend | max chars | ~tokens | override |
-  |---|---|---|---|
-  | `chatgpt` | 400,000 | 128K | `GPT_CONSULT_MAX_INPUT_CHARS` |
-  | `deepseek` | 100,000 | 32K | `GPT_CONSULT_MAX_INPUT_CHARS` |
-  | `gemini` | 500,000 | 125K | `GPT_CONSULT_MAX_INPUT_CHARS` |
-  These are conservative web-UI safe limits, not raw API limits. Web UIs
+  | backend | max chars | ~tokens | override | empirical ceiling |
+  |---|---|---|---|---|
+  | `chatgpt` | 200,000 | ~64K | `GPT_CONSULT_MAX_INPUT_CHARS` | 200K OK / 400K REJECTED (v7) |
+  | `deepseek` | 400,000 | ~128K | `GPT_CONSULT_MAX_INPUT_CHARS` | 400K OK, ceiling not yet probed |
+  | `gemini` | 1,000,000 | ~250K | `GPT_CONSULT_MAX_INPUT_CHARS` | 1M OK, ceiling not yet probed |
+  These are conservative web-UI safe limits derived from real-machine probes
+  (Round 11 v7, this user — `D:/www/scratch/round11_chat_box_v7.md`). Web UIs
   truncate, paste-stall, or DOM-corrupt above these. Switch backends or
   split the request if you're hitting the cap.
 - Single-process orchestrator. Concurrent `round.py` invocations on the

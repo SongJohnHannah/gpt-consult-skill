@@ -566,7 +566,7 @@ def get_max_input_chars(c: dict) -> int:
     Priority:
       1. env var GPT_CONSULT_MAX_INPUT_CHARS (positive int) — caller override.
       2. backend's own max_input_chars from backend_config.
-      3. fallback 400_000 (matches chatgpt conservative default).
+      3. fallback 200_000 (matches chatgpt empirical ceiling; Round 11 v7).
 
     Validation: env var MUST be a positive int. Invalid values (non-numeric,
     zero, negative) exit rc=2 with a clear error — failure must propagate,
@@ -590,4 +590,4 @@ def get_max_input_chars(c: dict) -> int:
                 f'{v}: must be positive. Refusing to send.\n')
             sys.exit(2)
         return v
-    return c.get('max_input_chars', 400_000)
+    return c.get('max_input_chars', 200_000)

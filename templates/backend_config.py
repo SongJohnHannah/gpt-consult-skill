@@ -74,9 +74,10 @@ BACKENDS: dict[str, dict] = {
             '[data-testid="new-chat-button"]',
             'nav a:first-child',
         ],
-        # ChatGPT web UI: practical safe limit ~128K tokens ≈ 400K chars.
-        # Beyond this the composer starts lagging and submit stalls.
-        'max_input_chars': 400_000,
+        # ChatGPT web UI: empirical ceiling ~200K chars (v7: 200K OK,
+        # 400K REJECTED). Set guard conservatively below rejection.
+        # Override per-call with env var GPT_CONSULT_MAX_INPUT_CHARS.
+        'max_input_chars': 200_000,
     },
     'deepseek': {
         'display': 'DeepSeek',
@@ -106,9 +107,12 @@ BACKENDS: dict[str, dict] = {
             'a:has-text("新对话")',
             '[aria-label*="new"]',
         ],
-        # DeepSeek web UI: practical safe limit ~32K tokens ≈ 100K chars.
-        # Web UI is tighter than the API (which advertises 64K-128K).
-        'max_input_chars': 100_000,
+        # DeepSeek web UI: empirical floor ~400K chars (v6/v7: 50K, 100K,
+        # 200K, 400K all OK; ceiling not yet probed). Conservative
+        # default set to tested-max (400K) — raise once higher probe
+        # is run. Web UI is tighter than the API (which advertises
+        # 64K-128K).
+        'max_input_chars': 400_000,
     },
     'gemini': {
         'display': 'Gemini',
@@ -141,10 +145,12 @@ BACKENDS: dict[str, dict] = {
             'a[href="/app"]',
             'button[aria-label*="New chat"]',
         ],
-        # Gemini web UI: practical safe limit ~125K tokens ≈ 500K chars.
-        # Gemini 2.5 Pro advertises 1M tokens but the web UI clamps input
-        # well before that.
-        'max_input_chars': 500_000,
+        # Gemini web UI: empirical floor ~1M chars (v7: 50K, 200K, 500K,
+        # 800K, 1M all OK; ceiling not yet probed). Conservative
+        # default set to tested-max (1M). Gemini 2.5 Pro advertises
+        # 1M tokens but the web UI clamps input well below that for
+        # many requests.
+        'max_input_chars': 1_000_000,
     },
 }
 
