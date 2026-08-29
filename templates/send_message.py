@@ -39,7 +39,7 @@ from media_kit import connect_browser
 _LOC_TIMEOUT_MS = 3000
 # Outer hard-kill budget for the entire send phase. Covers page.goto (30s)
 # + fill (3s) + 240s stream wait + 3s buffer.
-_SEND_WATCHDOG_S = 300
+_SEND_WATCHDOG_S = 1500  # Round 16: gemini thinking replies can take >10min
 
 
 def fill_input(page, loc, text, c):
@@ -149,7 +149,7 @@ def wait_for_reply(page, c, baseline_user, timeout_s: float | None = None) -> Re
     start = time.time()
     hard_deadline = start + timeout_s
     max_stream_s = float(os.environ.get(
-        'GPT_CONSULT_MAX_STREAM_S', '900'))
+        'GPT_CONSULT_MAX_STREAM_S', '1800'))
     stream_idle_s = float(os.environ.get(
         'GPT_CONSULT_STREAM_IDLE_S', '90'))
     stream_grace_s = float(os.environ.get(
@@ -210,7 +210,12 @@ def wait_for_reply(page, c, baseline_user, timeout_s: float | None = None) -> Re
             # post-finish count and `assistant_count > baseline_assistant`
             # is never True → terminal block never runs → hard_deadline
             # fires despite the reply being visible.
-            assistant_seen = True
+            # Round 16: don't set assistant_seen here unconditionally —
+            # gemini's thinking-mode pauses 3+ minutes between user msg
+            # and visible reply. Preemptively setting assistant_seen=True
+            # enables the STREAM_IDLE check at line 248 to false-fire
+            # before gemini even starts streaming. Only set it once a
+            # reply is actually visible (next block).
         if user_count == 0 and baseline_user == 0:
             user_seen = True
         if assistant_count > baseline_assistant:
@@ -323,8 +328,10 @@ def main():
             if page is None:
                 page = ctx.new_page()
                 page.goto(c['url'], wait_until='domcontentloaded', timeout=30000)
+                time.sleep(2.0)  # Round 16: gemini needs settle time after goto
             elif not page_host_matches(page, backend):
                 page.goto(c['url'], wait_until='domcontentloaded', timeout=30000)
+                time.sleep(2.0)
 
             # M3 audit fix: snapshot ONLY user message count before send.
             # baseline_asst was unsafe — if the page already had a pending
@@ -347,6 +354,17 @@ def main():
                       file=sys.stderr)
                 journal_row.mark_submitting()
             else:
+                # Round 16: gemini welcome screen has a sidenav drawer that
+                # occludes the composer until Escape is pressed. Close any
+                # open drawer before picking the composer; otherwise the
+                # backdrop's z-index makes the composer fail _is_visible().
+                if c['display'] == 'Gemini':
+                    try:
+                        page.keyboard.press('Escape')
+                        time.sleep(0.2)
+                    except Exception:
+                        pass
+
                 # FIND → ASSERT SEMANTIC IDENTITY: pick a composer that is
                 # actually editable, not a hidden fallback.
                 real_box = find_real_composer(page, c, timeout_ms=5000)
@@ -412,7 +430,7 @@ def main():
             ctx = browser.contexts[0]
             page = find_tab(ctx, backend) or ctx.pages[-1]
 
-            status = wait_for_reply(page, c, baseline_user, timeout_s=240)
+            status = wait_for_reply(page, c, baseline_user, timeout_s=1500)  # Round 16: gemini thinking can take >10min
 
     if status == ReplyStatus.DONE:
         # P4: mark confirmed so a future retry refuses to re-send.

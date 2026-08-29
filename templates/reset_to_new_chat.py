@@ -18,7 +18,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 
 from playwright.sync_api import sync_playwright
 from backend_config import cfg, find_tab
-from _helpers import watchdog, check_logged_in, check_input_visible, write_active_url, ensure_expert_mode
+from _helpers import watchdog, check_logged_in, check_input_visible, write_active_url, ensure_expert_mode, ensure_gemini_pro_thinking
 from media_kit import connect_browser
 
 
@@ -80,7 +80,10 @@ def main():
 
             # Round 14: deepseek fresh tab defaults to fast mode — click
             # 深度思考 to switch to R1 expert. No-op for other backends.
+            # Round 16: gemini fresh tab defaults to 3.6 Flash — click
+            # 3.1 Pro + 扩展思考 to enable thinking mode.
             ensure_expert_mode(page, c)
+            ensure_gemini_pro_thinking(page, c)
 
             # New tab is verified working. Close the OLD stuck tab.
             old_closed = False

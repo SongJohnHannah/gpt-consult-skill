@@ -65,13 +65,13 @@ class ReplyStatus(enum.Enum):
 #   - if streaming is idle (no content change) for > stream_idle_s, treat as
 #     stuck and return TIMEOUT (otherwise a frozen stream would loop forever)
 GPT_CONSULT_REPLY_TIMEOUT_S = float(os.environ.get(
-    'GPT_CONSULT_REPLY_TIMEOUT_S', '600'))
+    'GPT_CONSULT_REPLY_TIMEOUT_S', '1500'))  # Round 16: gemini 3.1 Pro + thinking can take >10min on complex prompts
 GPT_CONSULT_STREAM_GRACE_S = float(os.environ.get(
     'GPT_CONSULT_STREAM_GRACE_S', '120'))
 GPT_CONSULT_STREAM_IDLE_S = float(os.environ.get(
     'GPT_CONSULT_STREAM_IDLE_S', '90'))
 GPT_CONSULT_MAX_STREAM_S = float(os.environ.get(
-    'GPT_CONSULT_MAX_STREAM_S', '900'))
+    'GPT_CONSULT_MAX_STREAM_S', '1800'))  # Round 16: absolute cap raised to match
 
 
 def active_conv_path(backend: str) -> str:
@@ -146,6 +146,8 @@ _USER_SELECTORS = (
     'div.ds-message .ds-collapsible-text',     # deepseek user bubble
     '[data-message-author-role="user"]',       # chatgpt + ProseMirror
     '[data-role="user"]',                       # generic
+    'user-query',                               # gemini user bubble
+    '.query-content',                           # gemini (user-query inner div)
 )
 
 
@@ -389,6 +391,133 @@ def ensure_expert_mode(page, c: dict, timeout_s: float = 6.0) -> bool:
             pass
         time.sleep(0.4)
     return False
+
+
+# Round 16: gemini 3.1 Pro selection for consults.
+#
+# User-confirmed (2026-08-30): gemini's welcome tab DEFAULTS to 3.1 Pro +
+# the model already does visible thinking in its reply. The "扩展思考"
+# dropdown row is an OPTIONAL toggle that controls whether chip shows
+# "Pro 扩展" (visible UI marker) vs "Gemini Pro". It does NOT switch the
+# model into a fundamentally different mode — Pro already produces
+# step-by-step reasoning in the reply by default.
+#
+# Therefore the helper only needs to verify 3.1 Pro is selected. We do
+# NOT enforce the 扩展思考 toggle (user prefers default behavior).
+#
+# Verified selectors (Round 16):
+#   - Model chip trigger: button containing "Flash" or "Pro"
+#   - 3.1 Pro entry: text="3.1 Pro"
+#   - The 3.1 Pro row's gem-menu-item-content has class "selected checkmark-only"
+#     when active (vs just "checkmark-only" when not)
+_GEMINI_PRO_MODEL_TEXT = '3.1 Pro'
+
+
+def _gemini_dropdown_is_open(page) -> bool:
+    """True if the gemini model dropdown is currently visible."""
+    try:
+        return page.locator(f':text("{_GEMINI_PRO_MODEL_TEXT}"):visible').count() > 0
+    except Exception:
+        return False
+
+
+def _gemini_open_dropdown(page) -> bool:
+    """Click the model chip to open the dropdown. Returns True if dropdown visible."""
+    for sel in ['button:has-text("Pro"):visible', 'button:has-text("Flash"):visible']:
+        btns = page.locator(sel)
+        for i in range(btns.count()):
+            try:
+                btn = btns.nth(i)
+                txt = btn.inner_text(timeout=500)
+                # Skip upsell button (has Google AI Pro branding)
+                if 'Google AI' in txt or '升级' in txt:
+                    continue
+                btn.click(timeout=2000)
+                time.sleep(0.5)
+                if _gemini_dropdown_is_open(page):
+                    return True
+            except Exception:
+                continue
+    return _gemini_dropdown_is_open(page)
+
+
+def _gemini_pro_is_selected(page) -> bool:
+    """True if the chip currently shows 3.1 Pro as the active model.
+
+    Detection: 3.1 Pro row's gem-menu-item-content has 'selected' class when active.
+    """
+    try:
+        # Check chip text first (cheaper)
+        chip = page.locator('button:has-text("Pro"):visible').first
+        if chip.count() > 0:
+            txt = chip.inner_text(timeout=500)
+            if 'Pro' in txt and 'Flash' not in txt:
+                return True
+        # Fallback: open dropdown and check row class
+        was_open = _gemini_dropdown_is_open(page)
+        if not was_open:
+            _gemini_open_dropdown(page)
+            time.sleep(0.4)
+        row = page.locator(f'gem-menu-item:has-text("{_GEMINI_PRO_MODEL_TEXT}"):visible').first
+        if row.count() > 0:
+            cls = row.locator('gem-menu-item-content').first.evaluate(
+                "e => e ? e.getAttribute('class') : ''")
+            return 'selected' in (cls or '')
+    except Exception:
+        return False
+    return False
+
+
+def ensure_gemini_pro_thinking(page, c: dict, timeout_s: float = 8.0) -> bool:
+    """On a fresh gemini welcome screen, ensure 3.1 Pro is the active model.
+
+    Backend-specific: only gemini exposes this control. For other backends
+    (chatgpt, deepseek) this is a no-op that returns True.
+
+    Per user (2026-08-30): gemini's welcome tab already defaults to 3.1 Pro
+    which produces visible step-by-step reasoning in replies. The "扩展思考"
+    dropdown toggle is an OPTIONAL UI marker and is NOT enforced here.
+
+    Caller contract:
+      - Invoke BEFORE first message in a fresh conversation.
+      - Idempotent: if 3.1 Pro is already selected, no clicks.
+      - If the welcome screen is gone (no chip visible), the tab is mid-
+        conversation — return True (no-op, can't change model anyway).
+      - Failure non-fatal: returns False on timeout; caller logs + continues.
+
+    Returns True if Pro is selected (was already, OR clicked, OR tab is
+    mid-conversation). False only on timeout.
+    """
+    if c.get('display') != 'Gemini':
+        return True
+
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if _gemini_pro_is_selected(page):
+            return True
+
+        # Pro not selected — open dropdown and click 3.1 Pro
+        if not _gemini_open_dropdown(page):
+            time.sleep(0.4)
+            continue
+
+        try:
+            pro = page.locator(f'gem-menu-item:has-text("{_GEMINI_PRO_MODEL_TEXT}"):visible').first
+            if pro.count() > 0:
+                pro.click(timeout=2000)
+                time.sleep(0.4)
+        except Exception:
+            pass
+        finally:
+            try:
+                page.keyboard.press('Escape')
+                time.sleep(0.3)
+            except Exception:
+                pass
+
+        time.sleep(0.4)
+
+    return _gemini_pro_is_selected(page)
 
 
 def find_real_reply_text(page, c: dict, baseline_user: int,

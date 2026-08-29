@@ -17,7 +17,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 
 from playwright.sync_api import sync_playwright
 from backend_config import cfg, BACKENDS, page_host_matches, find_tab
-from _helpers import watchdog, check_logged_in, check_input_visible, write_active_url, ensure_expert_mode
+from _helpers import watchdog, check_logged_in, check_input_visible, write_active_url, ensure_expert_mode, ensure_gemini_pro_thinking
 from media_kit import connect_browser
 
 
@@ -61,8 +61,12 @@ def main():
                 # Round 14: deepseek defaults to fast mode on a fresh tab —
                 # click 深度思考 so the consult actually uses R1 expert. No-op
                 # for chatgpt/gemini. Failure is non-fatal; caller may log.
+                # Round 16: gemini defaults to 3.6 Flash on a fresh tab —
+                # click 3.1 Pro + 扩展思考 so the consult actually uses
+                # thinking mode. No-op for chatgpt/deepseek.
                 if ready:
                     ensure_expert_mode(page, c)
+                    ensure_gemini_pro_thinking(page, c)
 
                 # Snapshot the active conversation for find_tab() next time
                 write_active_url(backend, page.url)
