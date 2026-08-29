@@ -72,11 +72,11 @@ Wired into all 11 templates — every `p.chromium.connect_over_cdp(cdp_url())`
 became `connect_browser(p)`. Affected files:
 `send_message.py`, `send_with_images.py`, `check_status.py`,
 `extract_reply.py`, `is_logged_in.py`, `set_backend.py`,
-`reset_to_new_chat.py`, `open_chatgpt.py`.
+`reset_to_new_chat.py`.
 
-`open_chatgpt.py` was also modernized: dropped the powershell-based port
-detector (no longer needed — media-kit owns the CDP endpoint) and the
-substring hostname check (`'chatgpt.com' in page.url` → `page_host_matches`).
+`open_chatgpt.py` was REMOVED in Round 12 (dead code — its functionality is
+fully covered by `set_backend.py <backend>` which handles all backends
+including chatgpt).
 
 `templates/round.py` — recovery matrix formalized:
 
@@ -408,7 +408,6 @@ Templates in `templates/` (all Playwright-CDP — connect to mediaKit's Chrome o
 - `reset_to_new_chat.py [backend]` — opens a NEW TAB on the same backend, closes the old stuck tab
 - `set_backend.py <backend>` — opens a NEW TAB for a different backend (or reuses existing); verifies logged-in + ready
 - `is_logged_in.py [backend]` — check if a backend is logged in
-- `open_chatgpt.py` — legacy single-backend helper
 
 ## Execution loop
 
@@ -616,7 +615,6 @@ Then I will:
 └── templates/
     ├── backend_config.py     ← URL + selectors + find_tab() helper
     ├── check_status.py
-    ├── open_chatgpt.py
     ├── send_message.py
     ├── extract_reply.py
     ├── reset_to_new_chat.py  ← opens NEW TAB

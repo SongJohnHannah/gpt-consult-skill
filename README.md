@@ -2,7 +2,7 @@
 
 > Multi-AI consultation loop for Claude Code. Claude (executor) + ChatGPT / DeepSeek / Gemini (consultants), with the user observing live in their own Chrome.
 
-![status: verified](https://img.shields.io/badge/audit-Round_8_VERIFIED-2ea44f)
+![status: shipped](https://img.shields.io/badge/audit-Round_12_USER_CONTROLLED-2ea44f)
 ![license: MIT](https://img.shields.io/badge/license-MIT-blue)
 ![Claude Code skill](https://img.shields.io/badge/Claude_Code-skill-D97757)
 
@@ -125,7 +125,6 @@ Playwright (Python) ──► connectOverCDP. handles EVERYTHING inside:
 | `templates/check_status.py` | health check + interrupt detection |
 | `templates/extract_reply.py` | pulls newest AI message text |
 | `templates/is_logged_in.py` | verify backend session |
-| `templates/open_chatgpt.py` | legacy single-backend helper |
 | `templates/media_kit.py` | CDP connect helper |
 
 ## Audit status
