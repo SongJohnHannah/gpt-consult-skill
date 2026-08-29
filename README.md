@@ -2,7 +2,7 @@
 
 > Multi-AI consultation loop for Claude Code. Claude (executor) + ChatGPT / DeepSeek / Gemini (consultants), with the user observing live in their own Chrome.
 
-![status: shipped](https://img.shields.io/badge/audit-Round_12_USER_CONTROLLED-2ea44f)
+![status: shipped](https://img.shields.io/badge/audit-Round_16_USER_OR_CONSULTANT_EXIT-2ea44f)
 ![license: MIT](https://img.shields.io/badge/license-MIT-blue)
 ![Claude Code skill](https://img.shields.io/badge/Claude_Code-skill-D97757)
 
@@ -65,6 +65,9 @@ git clone https://github.com/SongJohnHannah/gpt-consult-skill.git \
 
 Just say any of:
 
+- "gpt 顾问" / "GPT 顾问" / "gpt顾问"
+- "deepseek 顾问" / "deepseek顾问" (defaults to **专家模式** / R1 expert)
+- "gemini 顾问" / "gemini顾问"
 - "让 GPT 帮我设计 X"
 - "问下 GPT 怎么 X"
 - "和 GPT 一起做 X"
@@ -78,7 +81,7 @@ Then Claude will:
 2. Open ChatGPT (and/or DeepSeek, Gemini) in your Chrome
 3. Send the first message
 4. Show you the reply + what it did locally
-5. Loop until you stop or the AIs signal completion
+5. Loop until you stop or the consultant signals completion
 
 You can interrupt from three places:
 
@@ -144,19 +147,28 @@ GPT flagged 5 minor suggestions (UUID-based round_id, atomic claim via
 conditional UPDATE, journal ordering, timeout centralization, etc.) —
 documented in the project memory and tracked as post-ship follow-ups.
 
-## Exit conditions (user-controlled — one hard exit)
+## Exit conditions (user-controlled OR consultant self-completion)
 
 | signal | source | behavior |
 |---|---|---|
-| you say 停 / 结束 / stop / done / 够了 | this conversation | immediate stop, no questions |
+| you say **停止顾问模式** / 停 / 结束 / stop / done / 够了 | this conversation | immediate stop, no questions |
+| consultant says **可以发布正式环境了** / **项目开发完毕了** / "ship it" / "ready for production" / "All tasks complete" (in their own reply) | the AI's reply in Chrome | stop the loop, surface consultant's verdict as final output |
 
-Anything else (long thinking time, many rounds, AI keeps suggesting,
-backend fails, you typed in the AI page, AI says "task complete" or
-`STATUS: COMPLETE`) **does NOT** exit the loop. The AI is a
-consultant — only you decide when you're done. Round 12 removed the
-AI-driven exit because GPT kept emitting the marker too readily,
-breaking multi-round iteration. Failover and tab reset still handle
-the other non-exit conditions.
+**Architecture note (Round 16):** in consultant mode the user is OBSERVER,
+not decision-maker. Every Claude output (probes, code, errors, attempts)
+is sent BACK to the consultant; the consultant gives the next plan;
+Claude executes; loop until Exit A or Exit B fires. The user only sees
+final summaries — Claude does not "organize then ask user to choose".
+
+**Important:** Claude must NEVER proactively inject completion phrases
+("可以发布", "项目完毕", "ship it") into the prompts it sends to the
+consultant. Those phrases only count as Exit B when the consultant itself
+emits them on its own — that's how we know the consultant has actually
+decided the work is done.
+
+Other conditions (long thinking time, many rounds, AI keeps suggesting,
+backend fails, you typed in the AI page, etc.) **do NOT** exit the loop.
+Failover and tab reset still handle the non-exit conditions.
 
 ## Limitations
 

@@ -1,6 +1,6 @@
 ---
 name: gpt-consult
-description: Long-running "AI consultant loop" between me (Claude) and ChatGPT/DeepSeek/Gemini, with the user observing live in their logged-in Chrome. Use when the user asks "让 GPT 帮我...", "问 GPT 怎么...", "和 GPT 一起做...", "GPT 顾问模式", "多 AI 一起搞", or any task where the user wants an AI as a sounding-board collaborator that I orchestrate step-by-step.
+description: Long-running "AI consultant loop" between me (Claude) and ChatGPT/DeepSeek/Gemini, with the user observing live in their logged-in Chrome. Use when the user says "gpt顾问", "deepseek顾问" (defaults to 专家模式), "gemini顾问", "让 GPT 帮我...", "问 GPT 怎么...", "和 GPT 一起做...", "GPT 顾问模式", "多 AI 一起搞", or any task where the user wants an AI as a sounding-board collaborator that I orchestrate step-by-step. Loop runs until user says "停止顾问模式" or the consultant itself says "可以发布正式环境了"/"项目开发完毕了" — Claude does not proactively inject completion phrases.
 ---
 
 # GPT Consult Loop — Level 2 Collaboration
@@ -259,6 +259,9 @@ The user sees every AI reply in real-time and can break in by typing in their Ch
 ## When to invoke
 
 User says any of:
+- "gpt 顾问" / "GPT 顾问" / "gpt顾问"
+- "deepseek 顾问" / "deepseek顾问" → defaults to **专家模式** (R1)
+- "gemini 顾问" / "gemini顾问"
 - "让 GPT 帮我 X" / "让 ChatGPT 帮我 X"
 - "问下 GPT 怎么 X"
 - "和 GPT 一起做 X"
@@ -436,18 +439,30 @@ loop:
        direction, send it, then loop continues under the new direction.
 ```
 
-## Exit conditions (exactly one — user-controlled)
+## Exit conditions (user-controlled OR consultant self-completion)
 
 | # | Signal | Source | Behavior |
 |---|---|---|---|
-| A | User says "停 / 结束 / stop / done / 够了" to me | This Claude Code conversation | **IMMEDIATE STOP**. No "are you sure?", no questions. Final summary emitted, transcript closed. |
+| A | User says "停止顾问模式" / "停 / 结束 / stop / done / 够了" to me | This Claude Code conversation | **IMMEDIATE STOP**. No "are you sure?", no questions. Final summary emitted, transcript closed. |
+| B | The consultant (ChatGPT / DeepSeek / Gemini) itself emits a natural completion phrase like "可以发布正式环境了" / "项目开发完毕了" / "All tasks complete" / "ship it" / "ready for production" | The consultant's reply, read from the browser | **STOP THE LOOP**. The consultant has decided the work is done. Emit the consultant's verdict to the user as the final output. |
 
-**Round 12 change** (this commit): the previous Exit B (AI emits
-`STATUS: COMPLETE` or free-form equivalent) was removed. The AI is a
-consultant — it doesn't decide when the user is done. Empirically GPT
-emitted the marker too readily, breaking multi-round iteration. The
-loop now runs until the user explicitly says stop. To end a
-consultation, say "停 / 结束 / stop / done" to Claude.
+**Round 16 changes**:
+- Exit A: added "停止顾问模式" as the canonical stop phrase (user said
+  "我不熟停止顾问模式你一直循环下去" — the user-friendly keyword is the
+  primary one). Other stop phrases still work as before.
+- Exit B: re-introduced as a NATURAL consultant-completion signal. The
+  previous Round 12 removal was overcautious (GPT was emitting
+  `STATUS: COMPLETE` too readily, but real completion verdicts like
+  "可以发布正式环境了" are legitimate). The new rule is: the consultant's
+  OWN completion language ends the loop, but Claude must NEVER proactively
+  inject completion phrases into prompts (those only count when the
+  consultant says them on its own).
+
+**Architecture note**: in consultant mode the user is OBSERVER, not
+decision-maker. Every Claude output (probe results, code, errors,
+attempts) is sent BACK to the consultant; the consultant gives the next
+plan; Claude executes; loop until Exit A or Exit B. The user only sees
+final summaries — Claude does not "organize then ask user to choose".
 
 ## Pivot handling (NOT an exit)
 

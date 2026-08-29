@@ -42,7 +42,7 @@ _LOC_TIMEOUT_MS = 3000
 _SEND_WATCHDOG_S = 300
 
 
-def fill_input(page, loc, text, backend):
+def fill_input(page, loc, text, c):
     """Focus the input then insert text via Playwright keyboard.insert_text.
 
     Why not clipboard paste: contenteditable components (ChatGPT ProseMirror,
@@ -80,7 +80,7 @@ def fill_input(page, loc, text, backend):
                   'preview — refusing to submit (would be stuck).',
                   file=sys.stderr)
             sys.exit(7)
-    if not submit_message(page, backend):
+    if not submit_message(page, c):
         print('[send_message] P3 ERROR: submit_message returned False — '
               'no Send button and Enter fallback failed.', file=sys.stderr)
         sys.exit(7)
@@ -154,6 +154,26 @@ def wait_for_reply(page, c, baseline_user, timeout_s: float | None = None) -> Re
         'GPT_CONSULT_STREAM_IDLE_S', '90'))
     stream_grace_s = float(os.environ.get(
         'GPT_CONSULT_STREAM_GRACE_S', '120'))
+
+    # Round 15: entry check for already-present reply. If wait_for_reply is
+    # started AFTER the reply is in DOM (e.g. retry after partial failure,
+    # or extremely fast R1 reply under 2s), baseline_assistant captures the
+    # post-finish count and the main loop never reaches terminal. Doing a
+    # one-shot find_real_reply_text here catches that case.
+    #
+    # Deepseek R1 expert flagged this as Bug B corner case 3.1b:
+    # "wait_for_reply 中 if user_count > baseline_user: assistant_seen = True
+    # 在 baseline 已包含当前用户消息时不成立，仍会假 TIMEOUT".
+    try:
+        initial_reply = find_real_reply_text(page, c, baseline_user,
+                                             skip_baseline=True)
+        if initial_reply and not _is_thinking_placeholder(initial_reply):
+            print(f"[send_message] {c['display']} reply already present at "
+                  f"wait_for_reply entry ({len(initial_reply)} chars) — "
+                  f"returning DONE.", file=sys.stderr)
+            return ReplyStatus.DONE
+    except Exception:
+        pass
 
     user_seen = False
     assistant_seen = False
@@ -339,12 +359,13 @@ def main():
                     sys.exit(4)
 
                 journal_row.mark_submitting()
-                fill_input(page, real_box, text, backend)
+                fill_input(page, real_box, text, c)
 
                 # ACT → ASSERT EFFECT: verify the user message actually appeared
-                # in DOM after fill_input. Bug A: timeout is 10s with a final
-                # post-deadline check (chatgpt can be slow under load).
-                if not verify_message_sent(page, c, baseline_user, timeout_s=10.0):
+                # in DOM after fill_input. Bug A: timeout is 30s with a final
+                # post-deadline check (deepseek commits user msg to DOM
+                # within ~5-15s in practice; 30s gives margin for slow loads).
+                if not verify_message_sent(page, c, baseline_user, timeout_s=30.0):
                     # Bug B: even if verify timed out, the message may have
                     # landed just after. Re-check once; if a new user message
                     # is in DOM, mark it for idempotency and continue. Only

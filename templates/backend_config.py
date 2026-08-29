@@ -206,36 +206,38 @@ def page_host_matches(page, backend: str) -> bool:
     return pg_host == target
 
 
-def find_tab(ctx, backend: str, conv_url: str | None = None):
+def find_tab(ctx, backend: str, conv_url: str | None = None,
+             force_new: bool = False):
     """Return the open tab for this backend, with conversation-aware disambiguation.
 
     Round 8 P1: refuse to pick the wrong tab when multiple tabs exist for the
     same backend. Resolves a target conversation_id from `conv_url` (explicit)
     or from the active-conversation file (fallback), then matches STRICTLY by
-    conversation_id. If the active conversation doesn't exist, returns None —
-    it does NOT silently fall through to another tab.
+    conversation_id.
+
+    Round 14: 0 exact matches fell through to discovery (reuse any open tab).
+    Round 15: that fallthrough was TOO LOOSE — it could silently reuse a tab
+    the user had just opened with their own draft. Now: only reuse when
+    discovery returns exactly 1 tab AND its URL has no conversation_id
+    (i.e. it's a blank root URL, not someone else's conversation). Otherwise
+    fail-closed.
+
+    Per deepseek R1 expert: "仅当 discovery 返回恰好一个 open tab，且该 tab
+    是空白新对话或 URL 不含 conversation_id 时才复用；否则返回 None，保持
+    fail-closed".
 
     Args:
         ctx: Playwright BrowserContext.
         backend: backend key from BACKENDS.
-        conv_url: optional explicit conversation URL. If given, takes priority
-            over the active-conversation file.
+        conv_url: optional explicit conversation URL.
+        force_new: bypass fallback entirely (always open a new tab).
+            Used by reset_to_new_chat.py to guarantee a fresh conversation.
 
     Returns:
-        Page or None.
-
-    Behavior:
-        conv_url given, matches target_id exactly:
-          1 found   -> that page
-          0 found   -> None (fail-closed; do NOT pick another tab)
-        No conv_url but active_url present, matches active_id exactly:
-          1 found   -> that page
-          0 found   -> None (fail-closed; active conversation missing)
-        No conv_url and no active_url (discovery):
-          0 matches -> None
-          1 match   -> that page
-          >=2 match -> sys.exit(9) ambiguity error
+        Page or None. None means caller should open a new tab.
     """
+    if force_new:
+        return None
     host = host_of(backend)
     matches = []
     for pg in ctx.pages:
@@ -260,22 +262,22 @@ def find_tab(ctx, backend: str, conv_url: str | None = None):
         ]
         if len(exact) == 1:
             return exact[0]
-        # Round 14: 0 matches means the active conversation is gone (user
-        # closed that tab). Fall through to discovery rules below so we
-        # reuse any other open tab of this backend instead of refusing.
-        # Prior fail-closed return None made failover open a SECOND deepseek
-        # tab every time after the first one was closed — accumulating tabs.
-        if len(exact) == 0:
-            pass  # fall through
-        else:
-            # >1 matches (impossible but defensive) -> fail-closed.
-            return None
+        # Round 15: 0 matches means the active conversation is gone. Do NOT
+        # silently reuse any other open tab (could be the user's own).
+        # Fail-closed — caller will open a fresh tab.
+        return None
 
-    # No target conversation_id, OR target_id not found -> discovery rules.
+    # No target conversation_id -> discovery rules.
     if len(matches) == 0:
         return None
     if len(matches) == 1:
-        return matches[0]
+        # Round 15: only reuse this single tab if its URL has no
+        # conversation_id (blank new-chat root). Otherwise it might be a
+        # real conversation the user is mid-way through — leave alone.
+        only = matches[0]
+        if extract_conversation_id(backend, only.url) is None:
+            return only
+        return None
     # >=2 matches with no disambiguator -> ambiguity. Refuse to guess.
     sys.stderr.write(
         f'[find_tab] AMBIGUITY: {len(matches)} {backend} tabs open and no '

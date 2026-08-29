@@ -165,13 +165,18 @@ _USER_SELECTORS = (
 # Fix: filter these strings in find_real_reply_text so we never accept
 # a placeholder as a stable reply.
 import re as _re
-# Match a string whose only non-whitespace characters come from the
-# placeholder vocab. Allows repeated "正在思考" on multiple lines, the
-# parens-style "已思考（用时 N 秒）", and the digits/parens/秒 used by it.
+# Round 15: STRICT placeholder regex. The previous "any non-whitespace char
+# in vocab" pattern matched "深度思考是一种重要的认知能力。" because 深度思考
+# + 是 + 一 + ... all matched individual vocab chars. Now the regex matches
+# ONLY exact placeholder strings (allowing whitespace). Strings like
+# "深度思考是一种重要的认知能力。" will NOT match (good — it's a real reply).
+#
+# Deepseek R1 expert (Round 15) flagged this as a Bug B corner case:
+# "回复文本恰好是'深度思考'开头但实际是有效中文回复".
 _THINKING_PLACEHOLDER_RE = _re.compile(
-    r'^[\s\n正在深度已思考用时秒（）()\d]+$'
+    r'^\s*(?:正在思考|深度思考|已思考[（(]用时\s*\d+\s*秒[）)])\s*$'
 )
-# Strict single-line match for the "已思考（用时 N 秒）" summary line on its own.
+# Summary line on its own (kept for explicit summary use).
 _THINKING_SUMMARY_RE = _re.compile(
     r'^\s*已思考[（(]用时\s*\d+\s*秒[）)]\s*$'
 )
@@ -263,41 +268,86 @@ def find_real_composer(page, c: dict, timeout_ms: int = 5000):
 
 
 def _is_thinking_placeholder(text: str) -> bool:
-    """True if `text` is JUST a deepseek R1 thinking placeholder.
+    """True if `text` is EXACTLY a deepseek R1 thinking placeholder.
 
-    Rejects strings like:
+    Round 15: strict full-string match. Accepts only:
       "正在思考"
-      "正在思考\\n正在思考"
       "深度思考"
-      "已思考（用时 2 秒）"
-    Accepts anything that contains real reply content (Chinese / English /
-    punctuation / digits / symbols that aren't in the placeholder vocab).
+      "已思考（用时 N 秒）"
+      (also allows surrounding whitespace and either full-width or
+      half-width parens.)
+    Rejects anything that contains real content beyond the placeholder —
+    e.g. "深度思考是一种重要的认知能力。" returns False (it's a real reply).
+
+    The previous cheap fast-path (any short text containing "深度思考" etc.)
+    was too aggressive and silently filtered valid Chinese replies.
     """
     if not text:
         return False
-    # Cheap fast-path: short text containing a known placeholder keyword.
-    if len(text) <= 60 and ('正在思考' in text
-                             or '深度思考' in text
-                             or _THINKING_SUMMARY_RE.match(text)):
-        return True
-    # Belt-and-suspenders: every non-whitespace char is in the placeholder vocab.
     return _THINKING_PLACEHOLDER_RE.match(text) is not None
 
 
-# Round 14: deepseek model-selection selector.
+# Round 15: deepseek model-selection selectors.
 # Deepseek shows 3 model cards on the welcome screen of a fresh tab:
-#   快速模式 (fast, DEFAULT), 专家模式 (R1 expert), 识图模式 (image)
-# The selected card has an extra `_31a22b0` class. Clicking a card
-# selects it; the conversation will start in that mode when the user
-# sends the first message. Once a conversation starts, model selection
+#   快速模式 (fast, DEFAULT), 专家模式 (R1 expert), 识图模式 (image).
+# Clicking a card selects it; the conversation starts in the SELECTED mode
+# when the first message is sent. Once a conversation starts, model selection
 # is LOCKED — no in-conversation model switch exists.
 #
-# Critical: `_DEEPSEEK_EXPERT_TOGGLE_SELECTOR` (the "深度思考" toggle) is a
-# SEPARATE control (show thinking chain in UI), NOT a model switcher.
-# Clicking it mid-conversation is a no-op for the actual model.
-_DEEPSEEK_EXPERT_CARD = 'div._9f2341b._18572c1'
-_DEEPSEEK_EXPERT_SELECTED_CLASS = '_31a22b0'
+# Round 14 used hash classes (_9f2341b._18572c1 + _31a22b0) which are
+# build-specific and may change every release. Round 15 prefers ARIA/data
+# attributes for selection state and uses text-matching for card location,
+# so the selector survives class hash churn.
 _DEEPSEEK_EXPERT_CARD_TEXT = '专家模式'
+# Common attribute names a radio-style card might expose. We read each in
+# order; the first one present wins.
+_DEEPSEEK_SELECTION_ATTRS = ('aria-pressed', 'aria-checked', 'data-selected')
+# Final fallback: the hash class from Round 14. May stop working after
+# a deepseek UI update; kept as last resort.
+_DEEPSEEK_EXPERT_SELECTED_CLASS_FALLBACK = '_31a22b0'
+
+
+def _card_is_selected(card) -> bool:
+    """True if the deepseek model card is currently selected.
+
+    Round 15: prefers ARIA/data attributes; falls back to the Round 14
+    hash class. Per deepseek R1 expert: "div._9f2341b._18572c1 + _31a22b0
+    是 hash class，DeepSeek 前端每次构建都可能变。必须优先读 aria-pressed /
+    aria-checked / data-selected，class 仅作 fallback".
+    """
+    try:
+        for attr in _DEEPSEEK_SELECTION_ATTRS:
+            val = card.get_attribute(attr)
+            if val is not None:
+                return val.lower() == 'true'
+    except Exception:
+        pass
+    try:
+        cls = card.get_attribute('class') or ''
+        return _DEEPSEEK_EXPERT_SELECTED_CLASS_FALLBACK in cls
+    except Exception:
+        return False
+
+
+def _find_expert_card(page):
+    """Locate the 专家模式 card by visible text (survives hash-class churn).
+
+    Tries `div[role="radio"]:has-text("专家模式")` first (semantic), then
+    any visible element containing the exact text. Returns None when the
+    welcome screen is gone (mid-conversation).
+    """
+    for sel in (
+        f'div[role="radio"]:has-text("{_DEEPSEEK_EXPERT_CARD_TEXT}")',
+        f'[role="radio"]:has-text("{_DEEPSEEK_EXPERT_CARD_TEXT}")',
+        f':has-text("{_DEEPSEEK_EXPERT_CARD_TEXT}")',
+    ):
+        try:
+            loc = page.locator(sel).first
+            if loc.count() > 0 and loc.is_visible(timeout=1500):
+                return loc
+        except Exception:
+            continue
+    return None
 
 
 def ensure_expert_mode(page, c: dict, timeout_s: float = 6.0) -> bool:
@@ -306,13 +356,8 @@ def ensure_expert_mode(page, c: dict, timeout_s: float = 6.0) -> bool:
     Backend-specific: only deepseek exposes this control. For other backends
     (chatgpt, gemini) this is a no-op that returns True.
 
-    Mechanism (verified live 2026-08-29):
-      - Deepseek fresh tab shows 3 model cards (快速模式 / 专家模式 / 识图模式).
-      - Clicking a card moves the `_31a22b0` class to it (radio-button UX).
-      - Conversation starts in the SELECTED mode when user sends first message.
-      - Once a conversation starts, model selection is LOCKED — no
-        in-conversation switch exists. Per user: "切换成功后 无法在切换
-        其它模型，只能重新开启标签切换模型".
+    Round 15: locator uses text-matching (survives class hash churn);
+    selection state read from ARIA/data attrs first, class fallback.
 
     Caller contract:
       - Invoke BEFORE first message in a fresh conversation.
@@ -327,37 +372,19 @@ def ensure_expert_mode(page, c: dict, timeout_s: float = 6.0) -> bool:
     if c.get('display') != 'DeepSeek':
         return True
 
-    # Only fire on the welcome screen. If cards aren't visible, the tab is
-    # already in a conversation and we can't change the model.
-    try:
-        cards = page.locator(_DEEPSEEK_EXPERT_CARD)
-        if cards.count() == 0:
-            return True
-    except Exception:
-        return True
-
     deadline = time.time() + timeout_s
     while time.time() < deadline:
+        card = _find_expert_card(page)
+        if card is None:
+            # Welcome screen is gone → mid-conversation, can't change model.
+            return True
         try:
-            expert_card = page.locator(
-                _DEEPSEEK_EXPERT_CARD, has_text=_DEEPSEEK_EXPERT_CARD_TEXT).first
-            if expert_card.count() > 0 and expert_card.is_visible(timeout=1500):
-                # Idempotent: if already selected, no click needed.
-                try:
-                    already = expert_card.evaluate(
-                        f'el => el.className.includes("{_DEEPSEEK_EXPERT_SELECTED_CLASS}")')
-                except Exception:
-                    already = False
-                if already:
-                    return True
-                expert_card.click(timeout=3000)
-                time.sleep(0.4)
-                # Verify the click moved the selected class.
-                try:
-                    return expert_card.evaluate(
-                        f'el => el.className.includes("{_DEEPSEEK_EXPERT_SELECTED_CLASS}")')
-                except Exception:
-                    return False
+            if _card_is_selected(card):
+                return True
+            card.click(timeout=3000)
+            time.sleep(0.4)
+            if _card_is_selected(card):
+                return True
         except Exception:
             pass
         time.sleep(0.4)
@@ -429,10 +456,37 @@ def find_real_reply_text(page, c: dict, baseline_user: int,
             # has the actual final answer without the thinking chain noise.
             if _is_thinking_placeholder(text):
                 continue
+            # Round 15: reject error / network-failure toasts that some
+            # backends render inside reply containers. Per deepseek R1 expert
+            # (Bug B 3.1c): "find_real_reply_text 需增加 ... 排除错误文本
+            # （连接失败/请求出错等），否则可能假 DONE".
+            if _is_error_text(text):
+                continue
             return text
         except Exception:
             continue
     return ''
+
+
+# Round 15: error-text patterns that some backends render inside reply
+# containers. Filter them so wait_for_reply doesn't terminate on a "reply"
+# that is actually a network/permission error toast.
+_ERROR_TEXT_PATTERNS = (
+    '连接失败', '请求出错', '网络错误', 'network error',
+    '请检查网络', '服务异常', 'try again', 'request failed',
+)
+
+
+def _is_error_text(text: str) -> bool:
+    """True if `text` looks like a backend error toast, not a real reply.
+
+    Conservative: only rejects text that is short (<= 80 chars) AND contains
+    a known error keyword. Longer replies that happen to mention an error
+    (e.g. code-review of a failing test) are still accepted.
+    """
+    if not text or len(text) > 80:
+        return False
+    return any(pat in text for pat in _ERROR_TEXT_PATTERNS)
 
 
 def is_real_streaming(page, c: dict, prev_reply_text: str = '') -> bool:
@@ -647,38 +701,107 @@ def clear_pending_attachments(page, timeout_ms: int = 5000) -> bool:
     return not detect_pending_attachments(page)
 
 
-def submit_message(page, c: dict) -> bool:
-    """Submit composer contents via the Send button (preferred) or Enter (fallback).
+# Round 15: backend-aware Send button selectors.
+# chatgpt uses native <button>; deepseek uses <div role="button"> with no
+# aria-label. Generic :has(svg) fallback catches both new UIs and future
+# backends (e.g. gemini variants).
+DEFAULT_SEND_SELECTORS = [
+    'button[data-testid="send-button"]',
+    'button[aria-label*="Send"]',
+    'button[aria-label*="发送"]',
+    'button[type="submit"]:not([aria-label*="Stop"])',
+    'div[role="button"]:has(svg)',
+]
 
-    Send button is preferred because Enter can be swallowed by attachment
-    previews, focus loss, IME state, or modal dialogs. Send button click is a
-    direct DOM action on the form's submit handler.
+# Deepseek's primary Send button is a <div role="button"> with the
+# `--primary --filled --circle` modifier classes (verified 2026-08-29).
+# Secondary: any visible :has(svg) div[role=button] as final fallback.
+DEEPSEEK_SEND_SELECTORS = [
+    'div[role="button"].ds-button--primary.ds-button--filled.ds-button--circle',
+    'div[role="button"].ds-button--circle',
+    'div[role="button"]:has(svg)',
+]
+
+
+def _get_send_selectors(backend: str) -> list:
+    if backend == 'deepseek':
+        return DEEPSEEK_SEND_SELECTORS
+    return DEFAULT_SEND_SELECTORS
+
+
+def _is_send_button_enabled(loc) -> bool:
+    """Guard for Send button candidates: visible + not disabled.
+
+    Rejects hidden elements (offsetParent null), aria-disabled, or class-
+    based ds-button--disabled markers (deepseek).
+    """
+    try:
+        if not loc.evaluate("e => e.offsetParent !== null"):
+            return False
+        if loc.evaluate(
+            "e => e.disabled || e.getAttribute('aria-disabled') === 'true'"
+        ):
+            return False
+        if loc.evaluate("e => e.className && e.className.includes"
+                        "('ds-button--disabled')"):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _find_send_button(page, selectors: list):
+    """Iterate selectors and return the first VISIBLE+ENABLED match.
+
+    Filters every candidate with _is_send_button_enabled before clicking,
+    so hidden/fallback buttons can't cause silent failure (the rc=8 case
+    where the wrong button "succeeds" but doesn't submit).
+    """
+    for sel in selectors:
+        try:
+            loc = page.locator(sel)
+            cnt = loc.count()
+            for i in range(cnt):
+                el = loc.nth(i)
+                if _is_send_button_enabled(el):
+                    return el
+        except Exception:
+            continue
+    return None
+
+
+def submit_message(page, c: dict) -> bool:
+    """Submit composer contents via Send button click (preferred).
+
+    Backend-aware selector list (Round 15): deepseek uses <div role="button">
+    instead of <button>; chatgpt/gemini use <button>. Generic :has(svg)
+    fallback catches both.
+
+    Send button is preferred because Enter is unreliable: deepseek binds its
+    own keydown handler that swallows Enter for newline-only. Enter fallback
+    is disabled entirely for deepseek (verified: Enter does nothing).
 
     Returns True if the submit action was triggered (caller still needs
     verify_message_sent to confirm the user message actually appeared in DOM).
     """
-    # Send button is backend-specific. Try the most common chatgpt selector
-    # first, then a generic aria-label match.
-    send_selectors = [
-        'button[data-testid="send-button"]',
-        'button[aria-label*="Send"]',
-        'button[aria-label*="发送"]',
-        'button[type="submit"]:not([aria-label*="Stop"])',
-    ]
-    for sel in send_selectors:
+    backend = c.get('name') or c.get('display', '').lower()
+    selectors = _get_send_selectors(backend)
+    btn = _find_send_button(page, selectors)
+    if btn is not None:
         try:
-            btn = page.locator(sel).first
-            if btn.count() == 0:
-                continue
-            if not btn.evaluate("e => e.offsetParent !== null"):
-                continue
-            if btn.evaluate("e => e.disabled || e.getAttribute('aria-disabled') === 'true'"):
-                continue
             btn.click(force=True, timeout=2000)
             return True
         except Exception:
-            continue
-    # Fallback to Enter — but only if no pending attachments remain.
+            pass
+
+    # Enter fallback. Deepseek confirmed to swallow Enter (newline-only
+    # binding), so skip it for deepseek to avoid silent rc=8.
+    if backend == 'deepseek':
+        print('[send] Enter fallback SKIPPED for deepseek — Send button '
+              'required.', file=sys.stderr)
+        return False
+
+    # Other backends: clear any pending attachments, then press Enter.
     if detect_pending_attachments(page):
         if not clear_pending_attachments(page):
             return False
