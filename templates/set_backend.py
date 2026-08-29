@@ -34,6 +34,7 @@ def main():
     c = cfg(backend)
 
     created_tab = None
+    success = False
     with watchdog(_WATCHDOG_S, 'set_backend'):
         try:
             with sync_playwright() as p:
@@ -71,8 +72,16 @@ def main():
 
                 if not logged_in or not ready:
                     sys.exit(3)
+
+                # Mark success BEFORE exiting the try block. On success the
+                # newly opened tab MUST stay open so find_tab() can route
+                # subsequent rounds to it.
+                success = True
         finally:
-            if created_tab is not None:
+            # On failure (sys.exit(3), exception, watchdog timeout) we close
+            # the orphan tab we created so it doesn't leak. On success we
+            # keep it open — that's the whole point of opening it.
+            if not success and created_tab is not None:
                 try:
                     created_tab.close()
                 except Exception:
