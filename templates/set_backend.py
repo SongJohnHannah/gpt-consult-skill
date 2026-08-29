@@ -17,7 +17,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 
 from playwright.sync_api import sync_playwright
 from backend_config import cfg, BACKENDS, page_host_matches, find_tab
-from _helpers import watchdog, check_logged_in, check_input_visible, write_active_url
+from _helpers import watchdog, check_logged_in, check_input_visible, write_active_url, ensure_expert_mode
 from media_kit import connect_browser
 
 
@@ -57,6 +57,12 @@ def main():
                 # M6 audit fix: use shared login helper
                 logged_in = check_logged_in(page, c)
                 ready = logged_in and check_input_visible(page, c, timeout_per_sel=5000)
+
+                # Round 14: deepseek defaults to fast mode on a fresh tab —
+                # click 深度思考 so the consult actually uses R1 expert. No-op
+                # for chatgpt/gemini. Failure is non-fatal; caller may log.
+                if ready:
+                    ensure_expert_mode(page, c)
 
                 # Snapshot the active conversation for find_tab() next time
                 write_active_url(backend, page.url)

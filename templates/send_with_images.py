@@ -19,6 +19,7 @@ from _helpers import (
     verify_message_sent,
     find_existing_send, mark_last_user_message,
     get_max_input_chars,
+    _USER_SELECTORS,
     ReplyStatus,
     GPT_CONSULT_REPLY_TIMEOUT_S,
 )
@@ -29,13 +30,7 @@ _LOC_TIMEOUT_MS = 3000
 _WATCHDOG_S = 360  # image round is slower than text round
 
 
-_USER_SELECTORS = [
-    # Round 13b: deepseek uses class-based selectors, not data-attribute.
-    # See send_message.py for rationale.
-    'div.ds-message .ds-collapsible-text',
-    '[data-message-author-role="user"]',
-    '[data-role="user"]',
-]
+# Round 13c: _USER_SELECTORS imported from _helpers (single source of truth).
 
 
 def _count_user(page) -> int:

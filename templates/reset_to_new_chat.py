@@ -18,7 +18,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 
 from playwright.sync_api import sync_playwright
 from backend_config import cfg, find_tab
-from _helpers import watchdog, check_logged_in, check_input_visible, write_active_url
+from _helpers import watchdog, check_logged_in, check_input_visible, write_active_url, ensure_expert_mode
 from media_kit import connect_browser
 
 
@@ -77,6 +77,10 @@ def main():
                     pass
                 print(f"[reset_to_new_chat] {c['display']} no input appeared", file=sys.stderr)
                 sys.exit(4)
+
+            # Round 14: deepseek fresh tab defaults to fast mode — click
+            # 深度思考 to switch to R1 expert. No-op for other backends.
+            ensure_expert_mode(page, c)
 
             # New tab is verified working. Close the OLD stuck tab.
             old_closed = False

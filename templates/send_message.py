@@ -25,6 +25,7 @@ from _helpers import (
     find_existing_send, mark_last_user_message,
     detect_pending_attachments, clear_pending_attachments, submit_message,
     get_max_input_chars,
+    _USER_SELECTORS,
     ReplyStatus,
     GPT_CONSULT_REPLY_TIMEOUT_S,
 )
@@ -85,17 +86,11 @@ def fill_input(page, loc, text, backend):
         sys.exit(7)
 
 
-_USER_SELECTORS = [
-    # Round 13b: deepseek uses class-based selectors, not data-attribute.
-    # .ds-collapsible-text wraps the user-content bubble; div.ds-message is
-    # the parent container shared with assistant messages (filtered by the
-    # child .ds-collapsible-text to distinguish user from assistant).
-    'div.ds-message .ds-collapsible-text',
-    # chatgpt uses ProseMirror + data-attribute (unchanged).
-    '[data-message-author-role="user"]',
-    # generic data-role fallback.
-    '[data-role="user"]',
-]
+# Round 13c: _USER_SELECTORS imported from _helpers (single source of truth).
+# Deepseek user bubble: `div.ds-message .ds-collapsible-text` (verified live:
+# user msgs have this wrapper, assistant msgs do not).
+# Chatgpt user msg: `[data-message-author-role="user"]`.
+# Generic fallback: `[data-role="user"]`.
 
 
 def _count_user(page) -> int:
@@ -188,6 +183,14 @@ def wait_for_reply(page, c, baseline_user, timeout_s: float | None = None) -> Re
 
         if user_count > baseline_user:
             user_seen = True
+            # Round 13c: a new user message indicates the round started;
+            # the assistant reply will follow (or has already arrived).
+            # Without this, if wait_for_reply starts AFTER the reply is
+            # already in DOM, baseline_assistant was captured at the
+            # post-finish count and `assistant_count > baseline_assistant`
+            # is never True → terminal block never runs → hard_deadline
+            # fires despite the reply being visible.
+            assistant_seen = True
         if user_count == 0 and baseline_user == 0:
             user_seen = True
         if assistant_count > baseline_assistant:

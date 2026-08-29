@@ -133,6 +133,50 @@ def watchdog(timeout_s: float, label: str):
         t.cancel()
 
 
+# Round 13c: deepseek-aware user-message selector list. Order matters (first
+# match wins for find_existing_send / mark_last_user_message). Verified live:
+#   - deepseek user messages: <div class="ds-message"><div class="ds-collapsible-text">TEXT</div></div>
+#   - deepseek assistant messages (fast + R1 expert): NO .ds-collapsible-text inside
+#   - chatgpt user messages: <div data-message-author-role="user">...</div>
+# So 'div.ds-message .ds-collapsible-text' matches ONLY user msgs on deepseek
+# (zero overlap with chatgpt, which uses no .ds-message class). Putting
+# deepseek first makes the common case fast; chatgpt selectors stay as fallback
+# for completeness.
+_USER_SELECTORS = (
+    'div.ds-message .ds-collapsible-text',     # deepseek user bubble
+    '[data-message-author-role="user"]',       # chatgpt + ProseMirror
+    '[data-role="user"]',                       # generic
+)
+
+
+# Round 13c: deepseek R1 expert mode shows transient "thinking placeholder"
+# text inside the assistant div.ds-message BEFORE the final answer is ready:
+#   "正在思考" / "正在思考\n正在思考"     (placeholder while R1 reasons)
+#   "深度思考"                            (alt placeholder)
+#   "已思考（用时 N 秒）"                  (thinking summary line, alone)
+# If find_real_reply_text returned any of these as the reply, wait_for_reply
+# would:
+#   1. falsely detect DONE in ~3s with a placeholder, OR
+#   2. never update last_text while streaming=True (Signal 2 keeps firing
+#      because prev="正在思考" != cur="已思考（用时 2 秒）..."), so the
+#      terminal block is permanently skipped → only max_stream_s (900s)
+#      or a brief not-streaming window can fire hard_deadline (observed: 240s
+#      DEADLINE when streaming briefly returned False mid-transition).
+# Fix: filter these strings in find_real_reply_text so we never accept
+# a placeholder as a stable reply.
+import re as _re
+# Match a string whose only non-whitespace characters come from the
+# placeholder vocab. Allows repeated "正在思考" on multiple lines, the
+# parens-style "已思考（用时 N 秒）", and the digits/parens/秒 used by it.
+_THINKING_PLACEHOLDER_RE = _re.compile(
+    r'^[\s\n正在深度已思考用时秒（）()\d]+$'
+)
+# Strict single-line match for the "已思考（用时 N 秒）" summary line on its own.
+_THINKING_SUMMARY_RE = _re.compile(
+    r'^\s*已思考[（(]用时\s*\d+\s*秒[）)]\s*$'
+)
+
+
 def check_logged_in(page, c: dict) -> bool:
     """True if `page` looks logged into backend `c`.
 
@@ -218,6 +262,96 @@ def find_real_composer(page, c: dict, timeout_ms: int = 5000):
     return None
 
 
+def _is_thinking_placeholder(text: str) -> bool:
+    """True if `text` is JUST a deepseek R1 thinking placeholder.
+
+    Rejects strings like:
+      "正在思考"
+      "正在思考\\n正在思考"
+      "深度思考"
+      "已思考（用时 2 秒）"
+    Accepts anything that contains real reply content (Chinese / English /
+    punctuation / digits / symbols that aren't in the placeholder vocab).
+    """
+    if not text:
+        return False
+    # Cheap fast-path: short text containing a known placeholder keyword.
+    if len(text) <= 60 and ('正在思考' in text
+                             or '深度思考' in text
+                             or _THINKING_SUMMARY_RE.match(text)):
+        return True
+    # Belt-and-suspenders: every non-whitespace char is in the placeholder vocab.
+    return _THINKING_PLACEHOLDER_RE.match(text) is not None
+
+
+# Round 14: deepseek-specific mode selector (R1 expert mode / 深度思考).
+# Other backends don't expose a mode toggle — chatgpt/gemini have fixed models.
+_DEEPSEEK_EXPERT_TOGGLE_SELECTOR = 'div.ds-toggle-button:has-text("深度思考")'
+_DEEPSEEK_EXPERT_SELECTED_CLASS = 'ds-toggle-button--selected'
+
+
+def ensure_expert_mode(page, c: dict, timeout_s: float = 6.0) -> bool:
+    """Click the deepseek 深度思考 (R1 expert) toggle if not already selected.
+
+    Backend-specific: only deepseek exposes this control. For other backends
+    (chatgpt, gemini) this is a no-op that returns True.
+
+    Why this lives here:
+      - When `set_backend.py` or `reset_to_new_chat.py` opens a fresh deepseek
+        tab, the page loads with the default mode (快速 / fast). Without
+        clicking 深度思考, every round on that tab answers in fast mode —
+        the user explicitly asked for expert mode but the skill never
+        selects it.
+      - User-controlled: if they have manually selected fast mode and we
+        force expert, we override their choice. Acceptable for the consult
+        loop's stated contract ("use deepseek expert mode"), but the helper
+        only fires at tab-creation paths (set_backend / reset_to_new_chat),
+        not on every send_message round.
+
+    Returns True if expert mode is selected after this call (was already
+    selected, OR we successfully clicked the toggle). False only when the
+    toggle never appeared within timeout_s — caller should log + continue
+    rather than block the round on this.
+    """
+    if c.get('display') != 'DeepSeek':
+        return True
+
+    deadline = time.time() + timeout_s
+    toggle = None
+    while time.time() < deadline:
+        try:
+            loc = page.locator(_DEEPSEEK_EXPERT_TOGGLE_SELECTOR).first
+            if loc.count() > 0 and loc.is_visible(timeout=1500):
+                toggle = loc
+                break
+        except Exception:
+            pass
+        time.sleep(0.4)
+    if toggle is None:
+        return False
+
+    # Idempotent: skip the click if expert mode is already selected.
+    try:
+        already = toggle.evaluate(
+            f'el => el.className.includes("{_DEEPSEEK_EXPERT_SELECTED_CLASS}")')
+    except Exception:
+        already = False
+    if already:
+        return True
+
+    try:
+        toggle.click(timeout=3000)
+    except Exception:
+        return False
+    # Re-check post-click; some UIs need a render frame to apply --selected.
+    time.sleep(0.4)
+    try:
+        return toggle.evaluate(
+            f'el => el.className.includes("{_DEEPSEEK_EXPERT_SELECTED_CLASS}")')
+    except Exception:
+        return False
+
+
 def find_real_reply_text(page, c: dict, baseline_user: int,
                          skip_baseline: bool = False) -> str:
     """Return the inner text of the latest assistant message that is non-empty
@@ -233,6 +367,13 @@ def find_real_reply_text(page, c: dict, baseline_user: int,
     a stale assistant reply from the previous round could satisfy the
     `text stable 3s` condition in wait_for_reply and report a false DONE.
 
+    Round 13c: also rejects deepseek R1 thinking placeholders ("正在思考",
+    "深度思考", "已思考（用时 N 秒）") via `_is_thinking_placeholder`.
+    These appear in the assistant div.ds-message BEFORE the final answer
+    is ready; accepting them as a reply either falsely reports DONE in ~3s
+    OR keeps `streaming=True` permanently (Signal 2 prev != cur forever),
+    causing hard_deadline / max_stream_s timeouts.
+
     Implementation enforces this via:
         if baseline_user > 0 and user_present <= baseline_user:
             return ''
@@ -246,14 +387,9 @@ def find_real_reply_text(page, c: dict, baseline_user: int,
     if not skip_baseline:
         try:
             user_present = 0
-            # Round 13b: deepseek uses class-based selectors, not data-attribute.
-            # .ds-collapsible-text is the user-content bubble inside div.ds-message.
-            # Must match send_message.py / send_with_images.py _USER_SELECTORS.
-            for sel in [
-                'div.ds-message .ds-collapsible-text',
-                '[data-message-author-role="user"]',
-                '[data-role="user"]',
-            ]:
+            # Round 13c: use module-level _USER_SELECTORS (sync with
+            # send_message.py / send_with_images.py and verify_message_sent).
+            for sel in _USER_SELECTORS:
                 try:
                     user_present = max(user_present, page.locator(sel).count())
                 except Exception:
@@ -273,8 +409,15 @@ def find_real_reply_text(page, c: dict, baseline_user: int,
             if not _is_visible(last):
                 continue
             text = last.inner_text(timeout=2000).strip()
-            if text:
-                return text
+            if not text:
+                continue
+            # Round 13c: never accept a deepseek R1 thinking placeholder as
+            # a reply. Try the next selector — the next-deepest assistant
+            # element (typically `div.ds-markdown.ds-assistant-message-main-content`)
+            # has the actual final answer without the thinking chain noise.
+            if _is_thinking_placeholder(text):
+                continue
+            return text
         except Exception:
             continue
     return ''
@@ -293,6 +436,31 @@ def is_real_streaming(page, c: dict, prev_reply_text: str = '') -> bool:
       2. assistant reply text changed since the caller's `prev_reply_text`
 
     Returns True if ANY signal is active.
+
+    Round 13c Bug B: Signal 2 was iterating ALL reply_selectors and
+    returning True if ANY one of them showed a text change. With the
+    deepseek R1 fix that promotes `div.ds-markdown.ds-assistant-message-main-content`
+    as the PRIMARY reply selector (clean final-answer text, no thinking
+    chain) while keeping `div.ds-message:not(:has(.ds-collapsible-text))`
+    as the FALLBACK (whole assistant div including "已思考（用时 N 秒）" +
+    thinking chain + final answer), Signal 2 fired FOREVER even after
+    R1 finished:
+
+      - find_real_reply_text uses PRIMARY → returns "2"
+      - prev_reply_text = "2"
+      - Signal 2 iterates selectors:
+          PRIMARY  → "2"     == prev, no fire
+          FALLBACK → "已思考（用时 15 秒）\n\n..." != prev → fires
+
+    → streaming=True permanently → terminal block never runs →
+    stable_for never accumulates → only max_stream_s / hard_deadline
+    can fire.
+
+    Fix: Signal 2 uses the SAME canonical reply text that
+    find_real_reply_text returns (same selector priority + same
+    placeholder filter). prev_reply_text and cur_text are now guaranteed
+    to come from the same source, so they only differ when the actual
+    final-answer content has changed.
     """
     # Signal 1: stop button visible
     for sel in c['stream_selectors']:
@@ -305,20 +473,17 @@ def is_real_streaming(page, c: dict, prev_reply_text: str = '') -> bool:
         except Exception:
             continue
 
-    # Signal 2: reply text changed since last call (caller-supplied)
+    # Signal 2: reply text changed since last call (caller-supplied).
+    # Use the canonical text source — same logic as find_real_reply_text
+    # (first non-empty selector, placeholder-filtered). This guarantees
+    # `cur_text` comes from the same element type as `prev_reply_text`,
+    # so they only differ when actual final-answer content has changed.
     if prev_reply_text:
         try:
-            for sel in c['reply_selectors']:
-                loc = page.locator(sel)
-                cnt = loc.count()
-                if cnt == 0:
-                    continue
-                last = loc.nth(cnt - 1)
-                if not _is_visible(last):
-                    continue
-                cur_text = last.inner_text(timeout=2000).strip()
-                if cur_text and cur_text != prev_reply_text:
-                    return True
+            cur_text = find_real_reply_text(
+                page, c, baseline_user=0, skip_baseline=True)
+            if cur_text and cur_text != prev_reply_text:
+                return True
         except Exception:
             pass
 
@@ -344,7 +509,8 @@ def verify_message_sent(page, c: dict, baseline_user: int,
     """
     def _user_count() -> int:
         n = 0
-        for sel in ['[data-message-author-role="user"]', '[data-role="user"]']:
+        # Round 13c: use module-level _USER_SELECTORS (deepseek-aware).
+        for sel in _USER_SELECTORS:
             try:
                 n = max(n, page.locator(sel).count())
             except Exception:
@@ -352,7 +518,7 @@ def verify_message_sent(page, c: dict, baseline_user: int,
         return n
 
     def _has_text() -> bool:
-        for sel in ['[data-message-author-role="user"]', '[data-role="user"]']:
+        for sel in _USER_SELECTORS:
             try:
                 loc = page.locator(sel)
                 cnt = loc.count()
@@ -549,11 +715,15 @@ def mark_last_user_message(page, text: str) -> bool:
     Called after verify_message_sent succeeds so the round becomes
     idempotent against later retries. Returns True if a user message was
     found and marked, False otherwise.
+
+    Round 13c: use module-level _USER_SELECTORS. The deepseek selector
+    `div.ds-message .ds-collapsible-text` matches ONLY user messages
+    (verified: assistant messages in fast + R1 expert mode have NO
+    .ds-collapsible-text descendant). No role-filter needed.
     """
     marker = text_marker(text)
     try:
-        return page.evaluate(r"""(marker) => {
-            const sels = ['[data-message-author-role="user"]', '[data-role="user"]'];
+        return page.evaluate(r"""({marker, sels}) => {
             for (const s of sels) {
                 const els = document.querySelectorAll(s);
                 if (els.length > 0) {
@@ -562,7 +732,7 @@ def mark_last_user_message(page, text: str) -> bool:
                 }
             }
             return false;
-        }""", marker)
+        }""", {"marker": marker, "sels": list(_USER_SELECTORS)})
     except Exception:
         return False
 

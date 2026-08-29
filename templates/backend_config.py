@@ -83,14 +83,32 @@ BACKENDS: dict[str, dict] = {
         'display': 'DeepSeek',
         'url': 'https://chat.deepseek.com',
         'input_selectors': [
-            'textarea[placeholder*="输入"]',
-            'textarea[placeholder*="Send"]',
+            # Round 13c: actual placeholder is '给 DeepSeek 发送消息 ' — bare
+            # substring match ('输入' / 'Send') doesn't hit it. Use the
+            # placeholder directly + bare textarea as fallback.
+            'textarea[placeholder="给 DeepSeek 发送消息 "]',
+            'textarea[placeholder*="DeepSeek"]',
             'textarea',
         ],
         'reply_selectors': [
             # Round 13b: deepseek uses class-based, not data-attribute.
             # div.ds-message wraps BOTH user and assistant. .ds-collapsible-text
             # is the user-content bubble — :not(:has(...)) excludes user msgs.
+            #
+            # Round 13c: do NOT promote `div.ds-markdown.ds-assistant-message-
+            # main-content` as the primary selector. Reasoning: R1 expert mode
+            # produces TWO reply "sources" at different times — the WHOLE
+            # assistant div.ds-message is always present (it contains the
+            # thinking summary + chain + final answer), while .ds-markdown
+            # only appears after R1 finishes reasoning. Using them as primary
+            # + fallback shifts the canonical reply text mid-round, so
+            # last_text (set from fallback during thinking) and cur (from
+            # primary after R1 finishes) never match → Signal 2 fires
+            # forever → terminal block never runs.
+            # Round 13c placeholder filter in find_real_reply_text skips
+            # pure-placeholder text ("正在思考" / "深度思考" /
+            # "已思考（用时 N 秒）") so this selector won't falsely return
+            # a placeholder as a stable reply.
             'div.ds-message:not(:has(.ds-collapsible-text))',
             # Generic data-role fallbacks (kept for hypothetical other backends).
             '[data-role="assistant"]',
@@ -242,10 +260,18 @@ def find_tab(ctx, backend: str, conv_url: str | None = None):
         ]
         if len(exact) == 1:
             return exact[0]
-        # 0 matches OR >1 (impossible but defensive) -> fail-closed.
-        return None
+        # Round 14: 0 matches means the active conversation is gone (user
+        # closed that tab). Fall through to discovery rules below so we
+        # reuse any other open tab of this backend instead of refusing.
+        # Prior fail-closed return None made failover open a SECOND deepseek
+        # tab every time after the first one was closed — accumulating tabs.
+        if len(exact) == 0:
+            pass  # fall through
+        else:
+            # >1 matches (impossible but defensive) -> fail-closed.
+            return None
 
-    # No target conversation_id -> discovery rules.
+    # No target conversation_id, OR target_id not found -> discovery rules.
     if len(matches) == 0:
         return None
     if len(matches) == 1:
