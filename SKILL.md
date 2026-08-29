@@ -72,7 +72,7 @@ Wired into all 11 templates — every `p.chromium.connect_over_cdp(cdp_url())`
 became `connect_browser(p)`. Affected files:
 `send_message.py`, `send_with_images.py`, `check_status.py`,
 `extract_reply.py`, `is_logged_in.py`, `set_backend.py`,
-`reset_to_new_chat.py`, `check_completion.py`, `open_chatgpt.py`.
+`reset_to_new_chat.py`, `open_chatgpt.py`.
 
 `open_chatgpt.py` was also modernized: dropped the powershell-based port
 detector (no longer needed — media-kit owns the CDP endpoint) and the
@@ -138,7 +138,7 @@ Audit order remaining:
 2. send_message transaction / idempotency
 3. CDP + tab lifecycle / round.py recovery
 
-### 2026-08-28 — Round 5: GPT verdict STATUS: COMPLETE
+### 2026-08-28 — Round 5: GPT verdict (historical note — STATUS: COMPLETE marker now removed in Round 12)
 
 All Round 4 findings closed. GPT verdict per ID:
 
@@ -403,7 +403,6 @@ After N stuck incidents on the current backend:
 Templates in `templates/` (all Playwright-CDP — connect to mediaKit's Chrome on 9333):
 - `backend_config.py` — backend URL + selector map (chatgpt/deepseek/gemini) + `find_tab()` helper
 - `check_status.py [backend]` — health check + interrupt detection, finds tab by URL
-- `check_completion.py [backend]` — detect "STATUS: COMPLETE" or equivalent in latest reply
 - `send_message.py "<text>" [backend]` — fills input + waits for stream completion (240s timeout); auto-opens a new tab if none exists
 - `extract_reply.py [backend]` — pulls the newest AI message text
 - `reset_to_new_chat.py [backend]` — opens a NEW TAB on the same backend, closes the old stuck tab
@@ -421,17 +420,13 @@ loop:
        - if user_typed_anything_new: PAUSE, read what they wrote, fold in
     2. compose next message to GPT
        - context: original task + last AI reply + my execution result
-       - append: "When the task is fully done and no more changes are needed,
-                  reply with literal marker: STATUS: COMPLETE"
     3. send_message(text)             ← STAYS in same tab (preserves memory)
     4. extract_reply()
     5. execute local work based on AI's advice
     6. write transcript entry (append-only log)
-    7. check exit conditions (only TWO hard exits):
+    7. check exit conditions (only ONE hard exit):
        - **EXIT A — you (user) say "停/结束/stop/done" to me in this Claude
          Code conversation** → IMMEDIATE stop, no questions
-       - **EXIT B — AI reply contains STATUS: COMPLETE** (or equivalent
-         completion phrase) → stop, summarize, no questions
        - everything else → loop again
     8. **STUCK? OPEN NEW TAB on same backend** (reset_to_new_chat.py)
        - only if hung/empty/repeated for N strikes on current backend
@@ -442,24 +437,18 @@ loop:
        direction, send it, then loop continues under the new direction.
 ```
 
-## Exit conditions (exactly two — no other stops)
+## Exit conditions (exactly one — user-controlled)
 
 | # | Signal | Source | Behavior |
 |---|---|---|---|
 | A | User says "停 / 结束 / stop / done / 够了" to me | This Claude Code conversation | **IMMEDIATE STOP**. No "are you sure?", no questions. Final summary emitted, transcript closed. |
-| B | AI reply contains completion marker | The current AI backend | **STOP**. Final summary emitted, transcript closed. |
 
-**Completion marker detection** — AI must output literal line:
-```
-STATUS: COMPLETE
-```
-The skill auto-detects this in `extract_reply.py` output (regex on the
-assistant's reply text). It also accepts free-form equivalents like:
-- "任务完成，无需再修改"
-- "All requirements met, no further changes needed"
-- "✅ Done. Nothing left."
-
-These are detected by a fallback heuristic on the last 500 chars of the reply.
+**Round 12 change** (this commit): the previous Exit B (AI emits
+`STATUS: COMPLETE` or free-form equivalent) was removed. The AI is a
+consultant — it doesn't decide when the user is done. Empirically GPT
+emitted the marker too readily, breaking multi-round iteration. The
+loop now runs until the user explicitly says stop. To end a
+consultation, say "停 / 结束 / stop / done" to Claude.
 
 ## Pivot handling (NOT an exit)
 
@@ -630,7 +619,6 @@ Then I will:
     ├── open_chatgpt.py
     ├── send_message.py
     ├── extract_reply.py
-    ├── check_completion.py
     ├── reset_to_new_chat.py  ← opens NEW TAB
     ├── set_backend.py        ← opens NEW TAB for different backend
     └── is_logged_in.py

@@ -124,7 +124,6 @@ Playwright (Python) ──► connectOverCDP. handles EVERYTHING inside:
 | `templates/set_backend.py` | opens NEW TAB for different backend |
 | `templates/check_status.py` | health check + interrupt detection |
 | `templates/extract_reply.py` | pulls newest AI message text |
-| `templates/check_completion.py` | detects `STATUS: COMPLETE` marker |
 | `templates/is_logged_in.py` | verify backend session |
 | `templates/open_chatgpt.py` | legacy single-backend helper |
 | `templates/media_kit.py` | CDP connect helper |
@@ -146,16 +145,19 @@ GPT flagged 5 minor suggestions (UUID-based round_id, atomic claim via
 conditional UPDATE, journal ordering, timeout centralization, etc.) —
 documented in the project memory and tracked as post-ship follow-ups.
 
-## Exit conditions (exactly two — no other stops)
+## Exit conditions (user-controlled — one hard exit)
 
 | signal | source | behavior |
 |---|---|---|
 | you say 停 / 结束 / stop / done / 够了 | this conversation | immediate stop, no questions |
-| AI reply contains `STATUS: COMPLETE` | the AI backend | stop, summarize, no questions |
 
 Anything else (long thinking time, many rounds, AI keeps suggesting,
-backend fails, you typed in the AI page) **does NOT** exit the loop.
-Failover and tab reset handle those.
+backend fails, you typed in the AI page, AI says "task complete" or
+`STATUS: COMPLETE`) **does NOT** exit the loop. The AI is a
+consultant — only you decide when you're done. Round 12 removed the
+AI-driven exit because GPT kept emitting the marker too readily,
+breaking multi-round iteration. Failover and tab reset still handle
+the other non-exit conditions.
 
 ## Limitations
 
