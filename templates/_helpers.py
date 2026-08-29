@@ -228,6 +228,15 @@ def find_real_reply_text(page, c: dict, baseline_user: int,
     started and we refuse to return any text (avoid returning stale nodes from
     a prior round).
 
+    Round 9 audit invariant (GPT-verified): a fast poll immediately after
+    submission MUST refuse text until `user_count > baseline_user`. Otherwise
+    a stale assistant reply from the previous round could satisfy the
+    `text stable 3s` condition in wait_for_reply and report a false DONE.
+
+    Implementation enforces this via:
+        if baseline_user > 0 and user_present <= baseline_user:
+            return ''
+
     Pass `skip_baseline=True` from callers that want the latest reply
     regardless of round tracking (e.g. extract_reply.py). Defaults to False
     for safety.
@@ -264,12 +273,21 @@ def find_real_reply_text(page, c: dict, baseline_user: int,
     return ''
 
 
-def is_real_streaming(page, c: dict) -> bool:
-    """True if a stop button is visible AND attached to active generation.
+def is_real_streaming(page, c: dict, prev_reply_text: str = '') -> bool:
+    """True if any streaming signal is active.
 
-    Stale stop buttons (left over from a previous round that finished) are
-    excluded. Returns True only if the selector matches AND offsetParent != null.
+    Round 9 minor improvement (GPT suggestion): combine multiple signals
+    rather than relying on stop-button alone. A UI redesign could leave
+    the stop button visible for non-generation reasons; conversely, a
+    long reasoning pause could hide it while the model is still working.
+
+    Signals (OR-combined):
+      1. stop-button selector visible (any selector in c['stream_selectors'])
+      2. assistant reply text changed since the caller's `prev_reply_text`
+
+    Returns True if ANY signal is active.
     """
+    # Signal 1: stop button visible
     for sel in c['stream_selectors']:
         try:
             loc = page.locator(sel).first
@@ -279,6 +297,24 @@ def is_real_streaming(page, c: dict) -> bool:
                 return True
         except Exception:
             continue
+
+    # Signal 2: reply text changed since last call (caller-supplied)
+    if prev_reply_text:
+        try:
+            for sel in c['reply_selectors']:
+                loc = page.locator(sel)
+                cnt = loc.count()
+                if cnt == 0:
+                    continue
+                last = loc.nth(cnt - 1)
+                if not _is_visible(last):
+                    continue
+                cur_text = last.inner_text(timeout=2000).strip()
+                if cur_text and cur_text != prev_reply_text:
+                    return True
+        except Exception:
+            pass
+
     return False
 
 
